@@ -10,6 +10,8 @@ import re
 import subprocess
 import time
 import stat
+import ipaddress
+import sys
 
 MAX_FILE=128*1024*1024
 MAX_METADATA=65536
@@ -28,6 +30,66 @@ def process_start(process):
     if len(raw)>4096 or len(fields)<20 or not fields[19].isdigit() or int(fields[19])<=0:
         raise ValueError('process_identity_unavailable')
     return int(fields[19])
+
+
+def process_listeners(process, check=lambda: None):
+    """Read this main process's sockets; never connect or inspect remote peers."""
+    def sockets():
+        result = set()
+        with os.scandir(process/'fd') as entries:
+            for count, entry in enumerate(entries, 1):
+                check()
+                if count > 1024:
+                    raise ValueError('network_descriptor_capacity')
+                target = os.readlink(entry.path)
+                match = re.fullmatch(r'socket:\[(\d+)\]', target)
+                if match:
+                    result.add(int(match[1]))
+        return result
+    owned = sockets()
+    listeners, matched = [], set()
+    for table, protocol, family in (('tcp', 'tcp', 4), ('tcp6', 'tcp', 6),
+                                    ('udp', 'udp', 4), ('udp6', 'udp', 6)):
+        check()
+        with (process/'net'/table).open('rb') as stream:
+            raw = stream.read(128*1024+1)
+        if len(raw) > 128*1024:
+            raise ValueError('network_table_capacity')
+        lines = raw.decode('ascii').splitlines()
+        if not lines or 'local_address' not in lines[0] or len(lines) > 2049:
+            raise ValueError('network_table_shape')
+        for line in lines[1:]:
+            check()
+            fields = line.split()
+            if len(fields) < 10 or not fields[9].isdigit():
+                raise ValueError('network_table_shape')
+            inode = int(fields[9])
+            if inode not in owned:
+                continue
+            matched.add(inode)
+            if protocol == 'tcp' and fields[3] != '0A':
+                continue
+            address, port = fields[1].split(':')
+            if (re.fullmatch('[0-9A-Fa-f]{8}' if family == 4 else '[0-9A-Fa-f]{32}', address) is None
+                    or re.fullmatch('[0-9A-Fa-f]{4}', port) is None):
+                raise ValueError('network_local_address_shape')
+            packed = bytes.fromhex(address)
+            if sys.byteorder == 'little':
+                packed = b''.join(packed[i:i+4][::-1] for i in range(0, len(packed), 4))
+            ip = ipaddress.ip_address(packed)
+            scope = ('wildcard' if ip.is_unspecified else 'loopback' if ip.is_loopback
+                     else 'link-local' if ip.is_link_local else 'private' if ip.is_private
+                     else 'global' if ip.is_global else 'other')
+            if int(port, 16):
+                listeners.append(dict(protocol=protocol, family=family, port=int(port, 16), bind_scope=scope))
+            if len(listeners) > 128:
+                raise ValueError('network_listener_capacity')
+    if sockets() != owned:
+        raise ValueError('network_descriptors_changed_during_observation')
+    return dict(state='observed', scope='selected-main-process-owned-TCP-listeners-and-bound-UDP',
+        listeners=sorted(listeners, key=lambda v: (v['protocol'], v['family'], v['port'], v['bind_scope'])),
+        unmatched_socket_count=len(owned-matched),
+        unassessed=['worker-descendants', 'non-TCP-UDP-sockets', 'firewall-NAT-and-peer-reachability'])
 
 
 def browser_components(check=lambda:None, root=Path('/'), owner_uid=0, run=subprocess.run, budget=4*1024*1024):
@@ -124,12 +186,251 @@ def declared_python_paths(process):
     return result
 
 
-def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=False):
+PUBLIC_ROOTS = (Path('/opt/daimon-app'), Path('/usr/libexec/incus'),
+                Path('/opt/daimon-onboarding-runtime'))
+TRUSTED_UID = 0
+
+
+def validate_deployments(value, units):
+    if (not isinstance(value, dict) or set(value) != {'schema', 'units'}
+            or value['schema'] != 'children-selected-deployments/v1'
+            or not isinstance(value['units'], dict) or not 1 <= len(value['units']) <= 8
+            or not set(value['units']) <= set(units)):
+        raise ValueError('selected_deployment_manifest_shape')
+    total = 0
+    trees = []
+    for row in value['units'].values():
+        if (not isinstance(row, dict) or not {'root', 'bind', 'source_ref', 'files'} <= set(row)
+                or set(row) - {'root', 'bind', 'source_ref', 'files', 'components', 'pythonpath'}
+                or row['bind'] not in {'cwd', 'executable', 'python-script'}
+                or not isinstance(row['source_ref'], str)
+                or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:/#._-]{0,255}', row['source_ref']) is None
+                or not isinstance(row['root'], str) or not Path(row['root']).is_absolute()
+                or '..' in Path(row['root']).parts
+                or not any(Path(row['root']).is_relative_to(p) for p in PUBLIC_ROOTS)
+                or not isinstance(row['files'], dict) or not row['files']):
+            raise ValueError('selected_deployment_manifest_shape')
+        trees.append(row)
+        if 'components' in row or 'pythonpath' in row:
+            if (row['bind'] != 'cwd' or not isinstance(row.get('components'), list)
+                    or not 1 <= len(row['components']) <= 3
+                    or not isinstance(row.get('pythonpath'), list)
+                    or len(row['pythonpath']) != len(row['components']) + 1
+                    or any(not isinstance(v, str) for v in row['pythonpath'])
+                    or len(set(row['pythonpath'])) != len(row['pythonpath'])):
+                raise ValueError('selected_deployment_components_shape')
+            roots = [row['root']]
+            for component in row['components']:
+                if (not isinstance(component, dict) or set(component) != {'root', 'source_ref', 'files'}
+                        or not isinstance(component['root'], str)
+                        or not Path(component['root']).is_absolute()
+                        or '..' in Path(component['root']).parts
+                        or not any(Path(component['root']).is_relative_to(p) for p in PUBLIC_ROOTS)
+                        or not isinstance(component['source_ref'], str)
+                        or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:/#._-]{0,255}', component['source_ref']) is None
+                        or not isinstance(component['files'], dict) or not component['files']):
+                    raise ValueError('selected_deployment_components_shape')
+                roots.append(component['root'])
+                trees.append(component)
+            if len(set(roots)) != len(roots) or set(roots) != set(row['pythonpath']):
+                raise ValueError('selected_deployment_component_roots')
+    for row in trees:
+        if len(row['files']) > 1024:
+            raise ValueError('selected_deployment_file_capacity')
+        for name, pin in row['files'].items():
+            if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_./-]{1,240}', name)
+                    or name.startswith('/') or any(p in {'', '.', '..', '__pycache__'} for p in name.split('/'))
+                    or name.endswith('.pyc') or not isinstance(pin, str)
+                    or re.fullmatch('[a-f0-9]{64}', pin) is None):
+                raise ValueError('selected_deployment_file_shape')
+            total += 1
+            if total > 4096:
+                raise ValueError('selected_deployment_file_capacity')
+    return value
+
+
+def load_deployments(path, expected, units):
+    path = Path(path)
+    if not isinstance(expected, str) or re.fullmatch('[a-f0-9]{64}', expected) is None:
+        raise ValueError('selected_deployment_manifest_pin')
+    for item in (path, *path.parents):
+        info = item.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != TRUSTED_UID or info.st_mode & 0o022:
+            raise ValueError('selected_deployment_manifest_custody')
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != TRUSTED_UID
+                or info.st_mode & 0o022 or info.st_size > 256*1024):
+            raise ValueError('selected_deployment_manifest_capacity')
+        raw = stream.read(256*1024+1)
+    if len(raw) > 256*1024 or hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError('selected_deployment_manifest_pin')
+    return validate_deployments(json.loads(raw), units)
+
+
+def deployment_files(root, check):
+    stack, files, nodes = [root], set(), 0
+    while stack:
+        directory = stack.pop()
+        check()
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != TRUSTED_UID or info.st_mode & 0o022):
+            raise ValueError('selected_deployment_directory_custody')
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                check()
+                nodes += 1
+                if nodes > 1024:
+                    raise ValueError('selected_deployment_file_capacity')
+                if entry.is_symlink():
+                    raise ValueError('selected_deployment_symlink')
+                if entry.name == '__pycache__' or entry.name.endswith('.pyc'):
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    files.add(str(Path(entry.path).relative_to(root)))
+                else:
+                    raise ValueError('selected_deployment_regular_file_required')
+    return files
+
+
+def python_script_entrypoint(process, image, root, files):
+    """Observe the actual interpreter's script argument, never execute source.
+
+    The remaining arguments may contain private configuration; retain none.
+    Python -c/-m and option-based script substitution are not script bindings.
+    """
+    if re.fullmatch(r'python3(?:\.\d+)?', image.name) is None:
+        raise ValueError('selected_deployment_python_interpreter_required')
+    with (process/'cmdline').open('rb') as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:
+        raise ValueError('command_metadata_capacity')
+    argv = raw.split(b'\0')
+    index = 1
+    while index < len(argv) and argv[index] in {b'-B', b'-I', b'-S', b'-u', b'-E', b'-s'}:
+        index += 1
+    if index < len(argv) and argv[index] == b'--':
+        index += 1
+    if index >= len(argv):
+        raise ValueError('selected_deployment_python_script_changed')
+    script = Path(os.fsdecode(argv[index]))
+    if (not script.is_absolute() or '..' in script.parts or not script.is_relative_to(root)
+            or str(script.relative_to(root)) not in files):
+        raise ValueError('selected_deployment_python_script_changed')
+    return str(script.relative_to(root))
+
+
+def verify_tree(row, hashed, check):
+    """Compare the complete selected public tree without importing its packages."""
+    root = Path(row['root'])
+    if root.resolve() != root:
+        raise ValueError('selected_deployment_symlink')
+    for parent in (root, *root.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != TRUSTED_UID or info.st_mode & 0o022:
+            raise ValueError('selected_deployment_directory_custody')
+        if parent in PUBLIC_ROOTS:
+            break
+    if deployment_files(root, check) != set(row['files']):
+        raise ValueError('selected_deployment_file_set_changed')
+    identities = {}
+    for name, pin in sorted(row['files'].items()):
+        check()
+        path = root/name
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != TRUSTED_UID
+                    or before.st_mode & 0o022):
+                raise ValueError('selected_deployment_file_custody')
+            identity, observed = hashed(stream)
+        if observed != pin:
+            raise ValueError('selected_deployment_file_changed')
+        identities[name] = identity
+    if deployment_files(root, check) != set(row['files']):
+        raise ValueError('selected_deployment_file_set_changed')
+    for name, identity in identities.items():
+        check()
+        if image_identity((root/name).stat()) != identity:
+            raise ValueError('selected_deployment_file_changed')
+
+
+def verify_deployment(row, process, image, hashed, check):
+    root = Path(row['root'])
+    if root.resolve() != root:
+        raise ValueError('selected_deployment_symlink')
+    for parent in (root, *root.parents):
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != TRUSTED_UID or info.st_mode & 0o022):
+            raise ValueError('selected_deployment_directory_custody')
+        if parent in PUBLIC_ROOTS:
+            break
+    entrypoint = None
+    if row['bind'] == 'python-script':
+        entrypoint = python_script_entrypoint(process, image, root, row['files'])
+    elif row['bind'] == 'cwd':
+        if (process/'cwd').resolve() != root:
+            raise ValueError('selected_deployment_cwd_changed')
+    elif not image.is_relative_to(root) or str(image.relative_to(root)) not in row['files']:
+        raise ValueError('selected_deployment_executable_changed')
+    verify_tree(row, hashed, check)
+    if row['bind'] == 'cwd' and (process/'cwd').resolve() != root:
+        raise ValueError('selected_deployment_cwd_changed')
+    if row['bind'] == 'python-script' and python_script_entrypoint(process, image, root, row['files']) != entrypoint:
+        raise ValueError('selected_deployment_python_script_changed')
+    components = []
+    if 'components' in row:
+        if [str(p) for p in declared_python_paths(process)] != row['pythonpath']:
+            raise ValueError('selected_deployment_pythonpath_changed')
+        for component in row['components']:
+            verify_tree(component, hashed, check)
+            components.append({'state': 'verified', 'source_ref': component['source_ref'],
+                               'files': len(component['files'])})
+        if [str(p) for p in declared_python_paths(process)] != row['pythonpath']:
+            raise ValueError('selected_deployment_pythonpath_changed')
+    return {'state': 'verified', 'source_ref': row['source_ref'], 'bind': row['bind'],
+            **({'components': components, 'pythonpath_verified': True} if components else {}),
+            'files': len(row['files']), 'loaded_main_executable': row['bind'] == 'executable',
+            **({'python_entrypoint': entrypoint} if entrypoint is not None else {}),
+            'meaning': 'Selected files and process association; Python imported modules, dependency authenticity and exposure remain unassessed'}
+
+
+def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=False, deployments=None,
+            include_network_listeners=False):
     if not 1<=len(units)<=8 or len(set(units))!=len(units):
         raise ValueError('bounded_unique_service_selection_required')
+    if deployments is not None:
+        validate_deployments(deployments, units)
     deadline=time.monotonic()+seconds;remaining=MAX_FILE;images={}
     def check():
         if time.monotonic()>deadline:raise ValueError('application_inventory_deadline')
+    def hashed(stream):
+        nonlocal remaining
+        before = os.fstat(stream.fileno())
+        identity = image_identity(before)
+        if identity in images:
+            hex_digest = images[identity]
+        else:
+            if before.st_size > remaining:
+                raise ValueError('executable_hash_capacity')
+            digest = hashlib.sha256()
+            while True:
+                check()
+                chunk = stream.read(1024*1024)
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                if remaining < 0:
+                    raise ValueError('executable_hash_capacity')
+                digest.update(chunk)
+            hex_digest = digest.hexdigest()
+            images[identity] = hex_digest
+        if identity != image_identity(os.fstat(stream.fileno())):
+            raise ValueError('executable_changed_during_read')
+        return identity, hex_digest
     report={'schema':'children-application-inventory/v1','checked':int(time.time()),
             'coverage':'partial','process_scope':'selected-systemd-main-processes-only','units':{},'environments':{},
             'unassessed':['upstream-advisory-applicability','malicious-artifacts',
@@ -144,21 +445,7 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
             value.update(pid=pid,process_start_ticks=started,executable=target)
             with image.open('rb') as stream:
                 before=os.fstat(stream.fileno())
-                identity=image_identity(before)
-                if identity in images:hex_digest=images[identity]
-                else:
-                    if before.st_size>remaining:raise ValueError('executable_hash_capacity')
-                    digest=hashlib.sha256()
-                    while True:
-                        check();chunk=stream.read(1024*1024)
-                        if not chunk:break
-                        remaining-=len(chunk)
-                        if remaining<0:raise ValueError('executable_hash_capacity')
-                        digest.update(chunk)
-                    hex_digest=digest.hexdigest();images[identity]=hex_digest
-                after=os.fstat(stream.fileno())
-                if identity!=image_identity(after):
-                    raise ValueError('executable_changed_during_read')
+                identity,hex_digest=hashed(stream)
             value.update(executable_sha256=hex_digest,executable_bytes=before.st_size)
             with (proc/str(pid)/'cmdline').open('rb') as stream:command=stream.read(4097)
             if len(command)>4096:raise ValueError('command_metadata_capacity')
@@ -184,6 +471,11 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
                     if len(report['environments'])>=8:raise ValueError('Python_path_capacity')
                     report['environments'][key]={'ecosystem':'unqualified-Python-metadata',
                         'packages':metadata(site,check),'source':'installed-metadata-only; not package-code execution'}
+            if deployments is not None and unit in deployments['units']:
+                value['deployment'] = verify_deployment(deployments['units'][unit], process,
+                    Path(target), hashed, check)
+            if include_network_listeners:
+                value['network_listeners'] = process_listeners(process, check)
             latest=properties(unit)
             if latest.get('MainPID')!=str(pid) or latest.get('ActiveState')!='active':
                 raise ValueError('service_changed_during_observation')
@@ -191,6 +483,21 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
                 raise ValueError('process_changed_during_observation')
             if image_identity(image.stat())!=identity or str(image.readlink())!=target:
                 raise ValueError('executable_changed_during_observation')
+            if (deployments is not None and unit in deployments['units']
+                    and deployments['units'][unit]['bind'] == 'cwd'
+                    and (process/'cwd').resolve() != Path(deployments['units'][unit]['root'])):
+                raise ValueError('selected_deployment_cwd_changed')
+            if (deployments is not None and unit in deployments['units']
+                    and deployments['units'][unit]['bind'] == 'python-script'
+                    and python_script_entrypoint(process, Path(target),
+                        Path(deployments['units'][unit]['root']), deployments['units'][unit]['files'])
+                        != value['deployment']['python_entrypoint']):
+                raise ValueError('selected_deployment_python_script_changed')
+            if (deployments is not None and unit in deployments['units']
+                    and 'components' in deployments['units'][unit]
+                    and [str(p) for p in declared_python_paths(process)]
+                    != deployments['units'][unit]['pythonpath']):
+                raise ValueError('selected_deployment_pythonpath_changed')
             value['state']='observed'
         except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
             value.update(state='unavailable',reason=str(error) if type(error) is ValueError else type(error).__name__)
@@ -205,9 +512,18 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--units',nargs='+',required=True)
     p.add_argument('--browser-components',action='store_true')
+    p.add_argument('--network-listeners',action='store_true')
+    p.add_argument('--deployment-manifest',type=Path)
+    p.add_argument('--deployment-manifest-sha256')
     args=p.parse_args()
     try:
-        report=collect(args.units,include_browser_components=args.browser_components);print(json.dumps(report,sort_keys=True))
+        if (args.deployment_manifest is None) != (args.deployment_manifest_sha256 is None):
+            raise ValueError('selected_deployment_manifest_pin')
+        deployments = (load_deployments(args.deployment_manifest,args.deployment_manifest_sha256,args.units)
+            if args.deployment_manifest is not None else None)
+        report=collect(args.units,include_browser_components=args.browser_components,deployments=deployments,
+                       include_network_listeners=args.network_listeners)
+        print(json.dumps(report,sort_keys=True))
         return 0 if all(v.get('state')=='observed' for v in report['units'].values()) and report.get('browser_components',{}).get('state','observed')=='observed' else 2
     except (OSError,ValueError,subprocess.SubprocessError) as error:
         print(json.dumps({'schema':'children-application-inventory/v1','state':'unavailable',

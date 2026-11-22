@@ -655,9 +655,9 @@ def render(home, works, subject, vpn, *, signed_out=False, passkeys=False, key_r
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(home["name"])} · Home</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><span>DAIMON MATRIX</span>{auth}</nav>{notice}<p id="passkey-status" role="status" aria-live="polite"></p><header><svg viewBox="0 0 88 48" aria-hidden="true"><ellipse cx="44" cy="24" rx="41" ry="17"/><ellipse cx="44" cy="24" rx="22" ry="22"/><circle cx="44" cy="24" r="4"/></svg><small>{esc(scope)}</small><h1>{esc(home["name"])}</h1><p>A shared starting place for ideas, experiments and things we make.</p><a href="{esc(home["vpn_url"], quote=True)}">Dedicated VPN space ↗</a></header><section class="works">{cards or "<p>Room for what comes next. Selected work will appear here as it is shared.</p>"}</section><nav class="ring" aria-label="Tribe web-ring">{rings}</nav><footer>Only work selected for your current access is shown. This page does not indicate current daimon activity.</footer></main></body></html>'''.encode()
 
 
-def artifact_context(app, home, reference, version, subject, vpn, *, origin, parent_token):
+def artifact_context(app, home, reference, version, subject, vpn, *, origin, parent_token, selection=None):
     """Existing isolated reader context, shared by preview and trusted apps."""
-    selected = app.selected(home, reference, version, subject, vpn)
+    selected = selection if selection is not None else app.selected(home, reference, version, subject, vpn)
     if not selected or selected["kind"] != "artifact":
         raise ValueError("preview_denied")
     content_origin = app.config[
@@ -697,14 +697,14 @@ def review_source(app, home, reference, version, subject, vpn, *, origin, parent
             'adapter_handshake': 'required'}
 
 
-def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details"):
+def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details", selection=None):
     if display_mode not in ("details", "work"):
         raise ValueError("invalid_display_mode")
     from .build_label import digest, stamp
     assets = Path(__file__).parent / 'assets'
     build = digest([Path(__file__)] + [assets / n for n in ('work-view.js','work-live-review.js','work-annotations.js','work-annotations.css','home.css')])
     selected, content_origin, prefix, source = artifact_context(
-        app, home, reference, version, subject, vpn, origin=origin, parent_token=parent_token)
+        app, home, reference, version, subject, vpn, origin=origin, parent_token=parent_token, selection=selection)
     current = next(
         e for e in app.entries(home, subject, vpn) if e["artifact_ref"] == reference
     )
@@ -1090,6 +1090,25 @@ def handler(app, *, owner=False):
                         raise ValueError("invalid_version_query")
                     version = query.get("version", ["current"])[0]
                     display_mode = query.get("display", ["details"])[0]
+                    if display_mode not in ("details", "work"):
+                        raise ValueError("invalid_display_mode")
+                    selected = app.selected(home, reference, version, subject, vpn)
+                    if not selected:
+                        raise ValueError("preview_denied")
+                    if selected["kind"] == "link":
+                        # Resolve only after the same current and historical
+                        # audience checks as artifact reads. Never fetch the
+                        # destination or transfer this home's credentials.
+                        destination = selected.get("url")
+                        if (not isinstance(destination, str) or not destination
+                                or any(ord(c) < 33 or ord(c) > 126 or c == "\\" for c in destination)):
+                            raise ValueError("invalid_link_destination")
+                        target = urlsplit(destination)
+                        if (target.scheme not in ("http", "https") or not target.hostname
+                                or target.username or target.password):
+                            raise ValueError("invalid_link_destination")
+                        self.respond(303, b"", headers=(("Location", destination),))
+                        return
                     self.respond(
                         200,
                         preview(
@@ -1102,6 +1121,7 @@ def handler(app, *, owner=False):
                             origin=origin,
                             parent_token=parent_token,
                             display_mode=display_mode,
+                            selection=selected,
                         ),
                         "text/html; charset=utf-8",
                         image_data=(display_mode == "work"),

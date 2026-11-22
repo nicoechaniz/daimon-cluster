@@ -16,6 +16,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ADMISSION_MATRIX_COMMIT = '0d178703ba3a44843322ad5c529e417e9c3a6bf0'
+SOURCE_VISIBILITY_COMMIT = '445ae4d1200dada8951a5d2024c0df2aca2e7dda'
+SOURCE_VISIBILITY_TEST = 'tests/test_onboarding_source.py::test_source_migrates_legacy_signed_catalogs_before_ordinary_views'
 TESTS = {'tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py',
          'tests/test_onboarding_group_publication.py', 'tests/test_portal_admission_baseline.py'}
 OWNER_TEST = 'tests/test_guest_owner_bootstrap.py'
@@ -36,7 +38,8 @@ def main(argv=None):
     parser.add_argument('tests', nargs='*', default=['tests/test_onboarding_group_admission.py'])
     args = parser.parse_args(argv)
     if (not re.fullmatch('[0-9a-f]{40}', args.sdk_commit) or not args.identity_python.is_absolute()
-            or any(item.split('::', 1)[0] not in TESTS | {OWNER_TEST, TARGET_TEST} for item in args.tests)):
+            or any(item != SOURCE_VISIBILITY_TEST
+                and item.split('::', 1)[0] not in TESTS | {OWNER_TEST, TARGET_TEST} for item in args.tests)):
         parser.error('an explicit SDK commit, absolute identity interpreter and supported tests are required')
     installed = json.loads(importlib.metadata.distribution('daimon-matrix').read_text('direct_url.json') or 'null')
     if not isinstance(installed, dict) or installed.get('vcs_info', {}).get('commit_id') != args.sdk_commit:

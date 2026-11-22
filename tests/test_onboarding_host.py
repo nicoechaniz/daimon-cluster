@@ -654,6 +654,21 @@ def test_host_sdk_preparation_keeps_its_system_interpreter(tmp_path, monkeypatch
     assert not any('/venv/' in argument for argument in argv)
 
 
+def test_host_sdk_preparation_uses_finite_maintenance_envelope(tmp_path, monkeypatch):
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    backend._target_call(value, 'sdk-prepare', candidate=candidate,
+                         observation_timeout_seconds=180)
+    argv, options = calls[0]
+    assert 60 < float(argv[argv.index('--observation-timeout-seconds') + 1]) <= 180
+    assert 60 < options['timeout_seconds'] <= 180
+    with pytest.raises(OnboardingError, match='receiving_host_deadline_required'):
+        backend._target_call(value, 'sdk-observe', candidate=candidate,
+                             observation_timeout_seconds=180)
+    with pytest.raises(OnboardingError, match='receiving_host_deadline_required'):
+        backend._target_call(value, 'sdk-prepare', candidate=candidate,
+                             observation_timeout_seconds=301)
+
+
 @pytest.mark.parametrize('change', ['missing-mount', 'writable-mount', 'other-source', 'changed-code',
                                   'wrong-digest', 'authority-action', 'public-profile'])
 def test_host_candidate_refusal_precedes_owner_command(tmp_path, monkeypatch, change):
@@ -835,7 +850,8 @@ def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_pat
 
 
 @pytest.mark.parametrize('change', [None, 'unmounted', 'changed-code', 'missing-implementation'])
-def test_managed_start_recovery_uses_qualified_root_helper_without_changing_target(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize('action', ['bootstrap-recover-start', 'bootstrap-inspect'])
+def test_managed_start_recovery_uses_qualified_root_helper_without_changing_target(tmp_path, monkeypatch, change, action):
     from clusterctl import onboarding_code_successor
     backend, value, run, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
     implementation_path = tmp_path / 'root-implementation'
@@ -855,19 +871,24 @@ def test_managed_start_recovery_uses_qualified_root_helper_without_changing_targ
     if change == 'changed-code':
         (implementation_path / 'clusterctl/onboarding_target.py').write_text('# unqualified overwrite\n')
     options = dict(candidate=candidate, timeout_seconds=5, request={'recovery': 'synthetic'})
+    if action == 'bootstrap-inspect':
+        options.update(request=None, owner_observation={'process':'selected'})
     if change != 'missing-implementation':
         options['implementation'] = implementation
-    if change:
+    if change and not (change == 'missing-implementation' and action == 'bootstrap-inspect'):
         with pytest.raises(OnboardingError):
-            backend._guest_service_call(value, 'bootstrap-recover-start', **options)
+            backend._guest_service_call(value, action, **options)
         assert not calls
         return
-    assert backend._guest_service_call(value, 'bootstrap-recover-start', **options) == {'observed': True}
+    assert backend._guest_service_call(value, action, **options) == {'observed': True}
     argv = calls[0][0]
     assert argv[:6] == ['exec', 'dm-eko', '--user', '0', '--group', '0']
     assert argv[argv.index('--') + 1] == '/usr/bin/python3'
     assert argv[argv.index('--runtime-code') + 1] == '/opt/daimon-onboarding-runtime/' + candidate[1]
     assert argv[argv.index('--runtime-digest') + 1] == candidate[1]
+    if change == 'missing-implementation':
+        assert '--implementation-code' not in argv
+        return
     assert argv[argv.index('--implementation-code') + 1] == guest_implementation
     assert argv[argv.index('--implementation-digest') + 1] == implementation[1]
     assert guest_implementation in argv[:argv.index('--action')]

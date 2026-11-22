@@ -111,9 +111,12 @@ def validate(spec: dict) -> dict:
                  'bootstrap_imports', 'journal', 'transaction'):
         _path(source[name])
     for guest in spec['guests'].values():
-        if not isinstance(guest, dict) or set(guest) != {'grant', 'tooling'}:
+        if not isinstance(guest, dict) or set(guest) - {'capability_additions'} != {'grant', 'tooling'}:
             raise OnboardingError('receiving_maintenance_binding_required')
         _path(guest['grant'])
+        if 'capability_additions' in guest:
+            from .onboarding_receiving_update import guest_capability_additions
+            guest_capability_additions(guest['capability_additions'])
     from .onboarding_owner_client import validate_tooling_recipe
     for profile in (source, *spec['guests'].values()):
         validate_tooling_recipe(profile['tooling'])
@@ -196,7 +199,7 @@ def source_worker(spec: dict, action: str) -> dict:
     observer, fingerprint = _artifact(spec['observer'])
     if Path(__file__).resolve().parents[1] != observer:
         raise OnboardingError('qualified_receiving_observer_required')
-    _sdk(observer, fingerprint)
+    observer_sdk, _ = _sdk(observer, fingerprint)
     if action == 'prepare-sdk':
         installed = set()
         for selection in (spec['observer'], candidate):
@@ -209,6 +212,12 @@ def source_worker(spec: dict, action: str) -> dict:
                 code_uid=0, **parameters)
             onboarding_sdk.runtime_imports(venv, code, code_uid=0, **parameters)
         return {'sdk_prepared': True, 'services_changed': 0}
+    # Publication validates the preserved runtime after catalog migration.
+    # Its controller must therefore use the same SDK as the selected successor,
+    # not an older validator which cannot read the newly migrated schema.
+    candidate_sdk, _ = _sdk(*_artifact({key: candidate[key] for key in ('code', 'code_digest')}))
+    if observer_sdk != candidate_sdk:
+        raise OnboardingError('receiving_control_binding_conflict')
     code, venv, imports = _owner_paths(spec, observer=True)
     _, parameters = _sdk(code, fingerprint)
     if Path(sys.prefix) != venv or not onboarding_sdk.startup_context(venv, imports, code):
@@ -1019,8 +1028,10 @@ class ReceivingMaintenance:
                     self._mounted_sdk(plan, vector)
                 frozen, request = prepare_guest_bootstrap(self.backend, plan, candidate=self.body,
                     manifest_path=_path(candidate['manifest_path']), manifest_digest=candidate['manifest_digest'],
-                    expires_at_ms=candidate['expires_at_ms'], timeout_seconds=60, manifest_uid=0)
-                if frozen['owner'].get('mode') != 'preserve':
+                    expires_at_ms=candidate['expires_at_ms'], timeout_seconds=60, manifest_uid=0,
+                    **({'capability_additions': self.spec['guests'][name]['capability_additions']}
+                       if 'capability_additions' in self.spec['guests'][name] else {}))
+                if frozen['owner'].get('mode') not in {'preserve', 'expand'}:
                     raise OnboardingError('receiving_maintenance_preservation_required')
                 self._record('guest:' + name, {'frozen': frozen, 'request': request})
             effects = self._effects()

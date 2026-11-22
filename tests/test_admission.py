@@ -432,9 +432,10 @@ def test_trickling_response_cannot_extend_admission_round_trip(tmp_path: Path, m
     connection = Trickle()
     monkeypatch.setattr(admission.time, "monotonic_ns", lambda: clock[0])
     monkeypatch.setattr(AdmissionEndpoint, "connect", lambda self, timeout: connection)
-    with pytest.raises(AdmissionUnavailable, match="deadline expired"):
+    with pytest.raises(AdmissionUnavailable, match="deadline expired") as failed:
         client.current()
     assert connection.reads <= 3
+    assert failed.value.phase == 'receive' and failed.value.action == 'current'
 
 
 def test_late_valid_signature_cannot_report_admission_success(authority_fixture, tmp_path: Path, monkeypatch) -> None:
@@ -455,8 +456,9 @@ def test_late_valid_signature_cannot_report_admission_success(authority_fixture,
         return valid
     monkeypatch.setattr(admission.time, "monotonic_ns", lambda: clock[0])
     monkeypatch.setattr(admission, "_verify_ed25519", delayed_verify)
-    with pytest.raises(AdmissionUnavailable, match="deadline expired"):
+    with pytest.raises(AdmissionUnavailable, match="deadline expired") as failed:
         client.current()
+    assert failed.value.phase == 'verify-response' and failed.value.action == 'current'
 
 
 def test_original_outer_deadline_is_shared_by_successive_signed_calls(authority_fixture, tmp_path: Path, monkeypatch) -> None:

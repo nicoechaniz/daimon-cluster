@@ -121,3 +121,29 @@ package/download policy. Keep host and four guest coverage distinct. The
 stop path disables only its future timer, preserving receipts and any safe
 active transaction. Never put a package installation under this read-only
 collector's hard timeout or infer reboot/removal permission.
+
+## Selected malicious-release observation
+
+The existing OSV public-version matcher already includes the
+[OpenSSF Malicious Packages source](https://google.github.io/osv.dev/data/).
+The collector projects its verified `MAL-YEAR-NUMBER` record IDs or aliases into
+`phases.selected_public_python_malicious`; it creates no second feed, network
+request, scanner or timer. Only the existing explicit public PyPI names and
+observed declared release versions are covered. Summaries never determine the
+classification. Active no-fix/non-CVE reports remain pending, aliases deduplicate,
+and withdrawn records retain their attribution without claiming remediation.
+
+`observed` requires the current successful query, its exact version-query digest,
+complete record and alias-group projection. Offline/stale-only source results,
+changed queries, missing records/groups or malformed withdrawal timestamps stay
+incomplete and fail execution health. A successful query with no matching
+malicious report means no selected triage, not artifact authentication, loaded
+code/exposure assessment or a clean-system certificate. Those limits and
+malicious releases outside selected public Python versions remain explicitly
+unassessed. The broader coverage incident is not resolved by this projection.
+
+The native selected service, its900second/512MiB/25%CPU/64task bounds, current and
+previous receipts,512MiB state ceiling and supported disable path are unchanged.
+A source-only rollout retains the exact predecessor code/config and verifies a
+fresh real occurrence through the existing service. It never repeats a package
+transaction or starts a child model/browser for qualification.

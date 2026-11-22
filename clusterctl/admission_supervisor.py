@@ -30,12 +30,16 @@ _RENEWAL_CAUSES = frozenset({
     'none', 'timeout', 'connection-refused', 'connection-reset',
     'connection-aborted', 'broken-pipe', 'os-error', 'other',
 })
+_RENEWAL_PHASES = frozenset({'prepare', 'connect', 'send', 'receive', 'decode', 'verify-response'})
+_RENEWAL_ACTIONS = frozenset({'position', 'renew', 'release', 'current', 'acquire',
+    'enroll', 'inventory', 'surface-inventory'})
 
 
 def renewal_failure_diagnostic(value: Any) -> dict[str, Any] | None:
     """Accept only the closed, non-private failure frame for journal output."""
+    fields = {'schema', 'code', 'cause', 'errno', 'elapsed_ms'}
     if (not isinstance(value, dict)
-            or set(value) != {'schema', 'code', 'cause', 'errno', 'elapsed_ms'}
+            or set(value) not in (fields, fields | {'phase', 'action'})
             or value['schema'] != 'cluster-admission-renewal-failure/v1'
             or not isinstance(value['code'], str)
             or value['code'] not in {*_RENEWAL_CODES.values(), 'other-admission-refusal'}
@@ -43,6 +47,10 @@ def renewal_failure_diagnostic(value: Any) -> dict[str, Any] | None:
             or (value['errno'] is not None and (type(value['errno']) is not int
                 or not 0 < value['errno'] <= 4095))
             or type(value['elapsed_ms']) is not int or not 0 <= value['elapsed_ms'] <= 1_000_000):
+        return None
+    if 'phase' in value and (not isinstance(value['phase'], str)
+            or value['phase'] not in _RENEWAL_PHASES or not isinstance(value['action'], str)
+            or value['action'] not in _RENEWAL_ACTIONS):
         return None
     return dict(value)
 
@@ -56,13 +64,18 @@ def _renewal_failure(error: AdmissionError, elapsed_s: float) -> dict[str, Any]:
         BrokenPipeError: 'broken-pipe', OSError: 'os-error',
     }
     errno = getattr(cause, 'errno', None)
-    return {
+    result = {
         'schema': 'cluster-admission-renewal-failure/v1',
         'code': _RENEWAL_CODES.get(str(error), 'other-admission-refusal'),
         'cause': 'none' if cause is None else kinds.get(type(cause), 'other'),
         'errno': errno if type(errno) is int and 0 < errno <= 4095 else None,
         'elapsed_ms': max(0, min(1_000_000, round(elapsed_s * 1000))),
     }
+    phase, action = getattr(error, 'phase', None), getattr(error, 'action', None)
+    if (isinstance(phase, str) and phase in _RENEWAL_PHASES
+            and isinstance(action, str) and action in _RENEWAL_ACTIONS):
+        result.update(phase=phase, action=action)
+    return result
 
 def _terminate_without_consuming_output(process: subprocess.Popen[bytes]) -> None:
     """Revoke execution immediately while leaving pipes to the owning caller."""

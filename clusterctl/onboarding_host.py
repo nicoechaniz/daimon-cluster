@@ -1731,9 +1731,11 @@ while True:
                      bootstrap_timeout_seconds: float | None = None,
                      bootstrap_initial: bool = False,
                      bootstrap_initial_service: bool = False,
+                     bootstrap_capability_additions: dict | None = None,
                      control_file: Path | None = None, control_command: Path | None = None,
                      control_value: dict | None = None, identity_expires_at_ms: int | None = None,
                      native_tooling: dict | None = None, group_request: dict | None = None,
+                     visibility_migration: dict | None = None,
                      remaining_execution: Callable[[], dict] | None = None,
                      authorization_expires_at_ms: int | None = None,
                      owner_deadline_ns: int | None = None) -> tuple[list[str], int | None, str | None]:
@@ -1755,6 +1757,11 @@ while True:
                 or type(owner_deadline_ns) is not int
                 or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000):
             raise OnboardingError('receiving_host_deadline_required')
+        if ((action == 'visibility-migrate') != (visibility_migration is not None)
+                or visibility_migration is not None and (candidate is None
+                    or observation_timeout_seconds is None or not isinstance(visibility_migration, dict)
+                    or len(json.dumps(visibility_migration).encode()) > 16384)):
+            raise OnboardingError('native_code_update_migration_binding_required')
         admitting = action in {'admission-prepare', 'admission-check', 'admission-enroll'}
         if ((authorization_expires_at_ms is not None and (not admitting
                     or type(authorization_expires_at_ms) is not int or not 0 < authorization_expires_at_ms < 2**53))
@@ -1791,6 +1798,11 @@ while True:
         if identity_expires_at_ms is not None and (type(identity_expires_at_ms) is not int
                 or not 0 < identity_expires_at_ms < 2**53):
             raise OnboardingError('invalid_receiving_identity_request')
+        if bootstrap_capability_additions is not None:
+            from .onboarding_receiving_update import guest_capability_additions
+            guest_capability_additions(bootstrap_capability_additions)
+            if action != 'receiving-bootstrap-freeze' or bootstrap_initial or bootstrap_initial_service:
+                raise OnboardingError('invalid_receiving_bootstrap_request')
         if bootstrapping:
             if (candidate is None or bootstrap_timeout_seconds is None
                     or observation_timeout_seconds is not None
@@ -1812,9 +1824,9 @@ while True:
         elif control_file is not None or control_command is not None or control_value is not None:
             raise OnboardingError('invalid_receiving_control_request')
         if observation_timeout_seconds is not None:
-            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
-                    or not 0 < observation_timeout_seconds <= 60):
+                    or not 0 < observation_timeout_seconds <= (300 if action in {'visibility-migrate', 'sdk-prepare'} else 60)):
                 raise OnboardingError('receiving_host_deadline_required')
             deadline_ns = time.monotonic_ns() + int(observation_timeout_seconds * 1_000_000_000)
             if owner_deadline_ns is not None:
@@ -1837,7 +1849,7 @@ while True:
         runtime_code, runtime_args, mounts = (self._runtime_paths(plan, guest_code) if candidate is None
             else self._runtime_paths(plan, guest_code, candidate=candidate))
         if candidate is not None:
-            if (action not in {'sdk-observe', 'sdk-prepare', 'observe', 'running', 'admitted-running',
+            if (action not in {'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'observe', 'running', 'admitted-running',
                     'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'receiving-bootstrap-freeze',
                     'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication', 'group-resource', 'group-session',
                     'admission-prepare', 'admission-check', 'admission-enroll'}
@@ -1868,6 +1880,8 @@ while True:
             "--plan", "/home/agent/.onboarding-input/plan.json", "--genesis", public + "/genesis.json",
             "--activation", public + "/activation.json", "--credential-response", public + "/credential-response.json",
             *peer_args, *(['--public-profile-json', json.dumps(profile, separators=(',', ':'))] if profile is not None else [])]
+        if visibility_migration is not None:
+            arguments += ['--visibility-migration-json', json.dumps(visibility_migration, separators=(',', ':'))]
         if require_loaded:
             arguments += ['--require-loaded']
         if base_native:
@@ -1916,6 +1930,8 @@ while True:
             if len(encoded.encode()) > 65536:
                 raise OnboardingError('receiving_native_tooling_recipe_required')
             arguments += ['--native-tooling-json', encoded]
+        if bootstrap_capability_additions is not None:
+            arguments += ['--bootstrap-capability-additions-json', json.dumps(bootstrap_capability_additions, sort_keys=True, separators=(',', ':'))]
         if bootstrap_request is not None:
             encoded = json.dumps(bootstrap_request, sort_keys=True, separators=(',', ':'))
             if len(encoded.encode()) > 131072:
@@ -1930,7 +1946,7 @@ while True:
         if bootstrap_initial_service:
             arguments += ['--bootstrap-initial-service']
         prepared_venv = None
-        if candidate is not None and (bootstrapping or action in {'running', 'admitted-running', 'receiving-identity',
+        if candidate is not None and (bootstrapping or action in {'visibility-migrate', 'running', 'admitted-running', 'receiving-identity',
                 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session',
                 'admission-prepare', 'admission-check', 'admission-enroll'}):
             # _runtime_paths verified the entire public candidate and its SDK.
@@ -1971,7 +1987,8 @@ while True:
                 or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60
                 or (action == 'bootstrap-inspect') != (request is None)
                 or action != 'bootstrap-inspect' and owner_observation is not None
-                or (action == 'bootstrap-recover-start') != (implementation is not None)):
+                or action == 'bootstrap-recover-start' and implementation is None
+                or implementation is not None and action not in {'bootstrap-recover-start','bootstrap-inspect'}):
             raise OnboardingError('receiving_guest_service_request_required')
         deadline_ns = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         if (owner_deadline_ns is not None and (type(owner_deadline_ns) is not int

@@ -52,6 +52,78 @@ def initial_publication(group_source, profile):
     return owner, group, journal, request, base
 
 
+def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_source):
+    """First publication must open already initialized receive-only catalogs."""
+    import sqlite3
+    from daimon_matrix import native_egress
+    if not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
+        pytest.skip('Selected legacy SDK lacks portable Conversation visibility; successor qualification runs this journey')
+    from daimon_matrix.canonical import b64url
+    from daimon_matrix.messaging_config import load_application
+    from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+
+    owner, group, _journal, initial, base = initial_publication(group_source, 'target')
+    owner.group_publication(initial, authority_closure={})
+    closed = load_application(base, group / 'application')
+    closed.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+
+    def pending():
+        rows = {}
+        for path in (group / 'application').glob('*.sqlite'):
+            with sqlite3.connect(path) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='echo_v2_obligations'").fetchone():
+                    for identifier, raw in db.execute('SELECT operation_id,record FROM echo_v2_obligations'):
+                        value = json.loads(raw)
+                        value.pop('authentication')
+                        rows[(path.name, identifier)] = value
+        return rows
+
+    originals = pending()
+    assert list((group / 'application').glob('*.sqlite'))
+    destination = dict(publication=dict(kind='conversation-journal/v1',
+        surface_ref='https://fixture.invalid/conversation', audience=['human:fixture'],
+        receipt_key=b64url(b'p' * 32)), representation='plain-json/v2')
+    identifier = initial['operation_id']
+    def submit(step, action, params):
+        return owner.group_publication(dict(operation_id=identifier, step=step, action=action, params=params),
+                                       authority_closure={})
+    disclosure = submit('disclosure', 'visibility-disclosure', dict(approved_destination=destination,
+        issued_at_ms=time.time_ns() // 1_000_000))['disclosure']
+    binding = submit('accept', 'visibility-accept', dict(approved_destination=destination,
+        disclosures=[disclosure]))['bindings'][0]['binding']
+    visibility = group / 'visibility'
+    visibility.mkdir(mode=0o700)
+    key = visibility / 'proof.key'
+    key.write_bytes(os.urandom(32))
+    key.chmod(0o600)
+    configuration = dict(destination=destination, secrets=dict(proof_key_file='proof.key'),
+        publication_backend=dict(kind='owner-unix/v1', socket_path='/tmp/portable-fixture.sock'))
+    request = dict(disclosure=disclosure, bindings=[binding], expected_installation_sha256=None,
+                   initial_configuration=configuration)
+    result = submit('visibility', 'visibility-publish', request)
+    assert submit('visibility', 'visibility-publish', request) == result
+    assert result['status'] == 'recorded'
+    assert pending() == originals
+    # A future destination change uses this same owner/catalog writer. No
+    # initial installation or membership expansion is needed a second time.
+    destination2 = copy.deepcopy(destination)
+    destination2['publication']['surface_ref'] += '/next'
+    disclosure2 = submit('successor-disclosure', 'visibility-disclosure', dict(
+        approved_destination=destination2, issued_at_ms=time.time_ns() // 1_000_000))['disclosure']
+    binding2 = submit('successor-accept', 'visibility-accept', dict(
+        approved_destination=destination2, disclosures=[disclosure2]))['bindings'][0]['binding']
+    original_key = (key.stat().st_ino, key.read_bytes())
+    successor = dict(disclosure=disclosure2, bindings=[binding2], initial_configuration=None,
+        expected_installation_sha256=result['installation_sha256'], replacement_configuration=dict(
+            destination=destination2, publication_backend=configuration['publication_backend']))
+    updated = submit('successor', 'visibility-publish', successor)
+    assert submit('successor', 'visibility-publish', successor) == updated
+    assert updated['installation_sha256'] != result['installation_sha256']
+    assert json.loads((visibility / 'installation.json').read_bytes())['document']['generation'] == 2
+    assert (key.stat().st_ino, key.read_bytes()) == original_key
+    assert pending() == originals
+
+
 @pytest.fixture
 def schema_owner(tmp_path):
     from tests.test_onboarding_target import receiving
@@ -1234,6 +1306,18 @@ def test_prepared_visibility_refuses_unadmitted_application_pins(group_source):
                     representation='compact-text/v1'), issued_at_ms=time.time_ns()//1_000_000)
 
 
+def test_publication_accepts_explicit_portable_successor_without_new_installation():
+    value = dict(operation_id=str(uuid.uuid4()), step='visibility', action='visibility-publish',
+        params=dict(disclosure={}, bindings=[], expected_installation_sha256='a'*64,
+            initial_configuration=None, replacement_configuration=dict(
+                destination={}, publication_backend={})))
+    assert publication_command(value) == value
+    for delta in ({'initial_configuration':{}}, {'expected_installation_sha256':None},
+                  {'replacement_configuration':{'destination':{}, 'publication_backend':{}, 'secrets':{}}}):
+        with pytest.raises(OnboardingError, match='publication_command_required'):
+            publication_command({**value, 'params':{**value['params'], **delta}})
+
+
 def test_publication_packets_are_closed_and_cannot_use_online_relationship_route():
     value = dict(operation_id=str(uuid.uuid4()), step='select', action='selection',
                  params=dict(expected_selection_sha256=None))
@@ -1288,3 +1372,36 @@ def test_publication_packets_are_closed_and_cannot_use_online_relationship_route
         publication_command({**snapshot, 'params': {**snapshot['params'], 'expected_stores': {}}})
     with pytest.raises(OnboardingError, match='publication_command_required'):
         publication_command({**snapshot, 'params': {**snapshot['params'], 'expected_preservation': {}}})
+
+
+def test_owner_publication_forwards_explicit_destination_replacement(tmp_path, monkeypatch):
+    from daimon_matrix import operator_messaging
+    from clusterctl.onboarding_group_admission import _publication_effect
+    value = dict(operation_id=str(uuid.uuid4()), step='portable-destination',
+        action='visibility-publish', params=dict(disclosure={'selected': 'disclosure'}, bindings=[],
+            expected_installation_sha256='a'*64, initial_configuration=None,
+            replacement_configuration=dict(destination={'publication': 'owner descriptor'},
+                publication_backend={'kind': 'owner-unix/v1', 'socket_path': '/owner/socket'})))
+    packet = request_packet(dict(command=value, offline=True, authority_closure={}))
+    assert packet['command'] == value
+    with pytest.raises(OnboardingError, match='publication_command_required'):
+        publication_command({**value, 'params':{**value['params'], 'unapproved':True}})
+    with pytest.raises(OnboardingError, match='publication_command_required'):
+        publication_command(dict(operation_id=value['operation_id'], step='select', action='selection',
+            params=dict(expected_selection_sha256=None, replacement_configuration={})))
+    # The actual dispatch seam must preserve the exact owner parameters, not
+    # silently discard the replacement and keep the old Telegram destination.
+    calls = []
+    def publish(hosted, directory, installation, **params):
+        calls.append((hosted, directory, installation, params))
+        raise OSError('retained writer result unavailable')
+    monkeypatch.setattr(operator_messaging, 'publish_group_visibility', publish)
+    hosted = object()
+    with pytest.raises(OSError, match='retained writer result unavailable'):
+        _publication_effect(hosted, tmp_path, packet['command'], {}, operation=tmp_path/'operation',
+            context={}, snapshot=None)
+    assert calls == [(hosted, tmp_path/'application', tmp_path/'visibility/installation.json', value['params'])]
+    # Existing requests remain byte-for-byte compatible without the optional field.
+    legacy = copy.deepcopy(value)
+    del legacy['params']['replacement_configuration']
+    assert publication_command(legacy) == legacy

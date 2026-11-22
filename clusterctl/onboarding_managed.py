@@ -19,20 +19,30 @@ from .onboarding_service import UNIT
 from .production_fences import ed25519_fingerprint
 
 
-def _code_update_group(value: dict) -> dict | None:
-    """Freeze an existing intake-only group; code updates cannot release it."""
+def _code_update_group(value: dict, *, published: bool = False) -> dict | None:
+    """Freeze the existing group and publication without changing release policy."""
     group = value.get('group')
     if group is None:
         return None
     app = (value.get('group_runtime_status') or {}).get('loaded_application')
+    visibility = app.get('visibility', {}) if isinstance(app, dict) else {}
     if (not isinstance(group, dict) or not isinstance(app, dict)
-            or app.get('visibility', {}).get('release_enabled') is not False
-            or app.get('visibility', {}).get('installation_sha256') is not None
+            or visibility.get('release_enabled') is not published
             or any(not isinstance(app.get(key), str) or re.fullmatch('[0-9a-f]{64}', app[key]) is None
-                for key in ('application_sha256', 'publication_sha256'))):
+                for key in ('application_sha256', 'publication_sha256'))
+            or not published and visibility.get('installation_sha256') is not None
+            or published and (visibility.get('catalog_validation') != 'validated'
+                or any(not isinstance(visibility.get(key), str)
+                    or re.fullmatch('[0-9a-f]{64}', visibility[key]) is None
+                    for key in ('installation_sha256', 'policy_sha256')))):
         raise OnboardingError('native_code_update_closed_group_required')
-    return dict(selected=group, application_sha256=app['application_sha256'],
-        publication_sha256=app['publication_sha256'], outbound_release=False)
+    result = dict(selected=group, application_sha256=app['application_sha256'],
+        publication_sha256=app['publication_sha256'], outbound_release=published)
+    if published:
+        result.update(installation_sha256=visibility['installation_sha256'],
+            policy_sha256=visibility['policy_sha256'])
+    return result
+
 
 
 class ManagedRuntime:
@@ -86,27 +96,43 @@ class ManagedRuntime:
 
     def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
                            operation_id: str, timeout_seconds: float = 120,
-                           receive_only_group: bool = False) -> dict:
+                           receive_only_group: bool = False, published_group: bool = False,
+                           current_observer=None, recovery_implementation=None,
+                           reconcile_existing: bool = False, capability_additions: dict | None = None) -> dict:
         """Select code for an admitted body through its existing unit writer.
 
         No group publication or controller renewal is involved. The durable
         request binds the actual admitted predecessor and changes only ExecStart;
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
-        The complete operation includes cold SDK preparation within 120 seconds;
-        each owner/physical request remains capped at 60 seconds and shares the
-        original overall deadline. No internal deadline is renewed.
-        An existing closed group is frozen across the update. Retain one current
+        The complete operation includes cold SDK preparation within its declared envelope;
+        ordinary owner reads and physical requests remain capped at60seconds;
+        stopped-owner migration may use the remaining300s envelope, and read-only
+        post-start observation may use180seconds of the same original deadline.
+        No start or write authority is renewed.
+        An existing group and publication are frozen across the update. Published
+        groups explicitly migrate catalogs under their stopped native owner;
+        they never repeat enrollment or publication. Retain one current
         and one previous completed receipt; unfinished effects require exact
         reconciliation and can never be replaced by a new operation.
         """
         from .onboarding_service import command
-        if (self.settings.get('mode') != 'native-admission-only'
-                or type(receive_only_group) is not bool
+        from .onboarding_receiving_update import guest_capability_additions, preservation_authorization
+        additions = guest_capability_additions(capability_additions)
+        if additions and (not published_group or reconcile_existing):
+            raise OnboardingError('receiving_guest_capability_additions_required')
+        if (type(receive_only_group) is not bool or type(published_group) is not bool
+                or type(reconcile_existing) is not bool
+                or reconcile_existing and (not published_group or current_observer is None)
+                or receive_only_group and published_group
                 or str(uuid.UUID(operation_id)) != operation_id
-                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120
-                or self._selection(plan) != (None, None)):
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 480
+                or not published_group and (self.settings.get('mode') != 'native-admission-only'
+                    or self._selection(plan) != (None, None))):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
+        with_group = receive_only_group or published_group
+        if current_observer is not None and not with_group:
+            raise OnboardingError('qualified_onboarding_group_required')
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         def remaining():
             seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
@@ -135,89 +161,313 @@ class ManagedRuntime:
                 plan_digest=digest(plan), candidate_digest=candidate[1], argv=argv)
             if receive_only_group:
                 pins['receive_only_group'] = True
+            if published_group:
+                pins.pop('argv')
+                pins['published_group'] = True
+            if additions:
+                pins['capability_additions'] = additions
             def save():
                 if len(json.dumps(state).encode()) > 65536:
                     raise OnboardingError('native_code_update_record_limit')
                 being_seed._write(path, state)
-            def observe():
-                value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
-                    observation_timeout_seconds=remaining(),
-                    **({'current_native': True, 'require_loaded': True} if receive_only_group else {}))
+            def observe(*, starting: bool = False):
+                if current_observer is None:
+                    value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
+                        observation_timeout_seconds=remaining(),
+                        **({'current_native': True, 'require_loaded': True} if with_group else {}))
+                else:
+                    # A new parent still has to prepare and admit its child. Use
+                    # the operation's existing budget for this read; a nested
+                    # one-minute cap previously required manual finalization.
+                    current_observer.deadline_ns = min(deadline, time.monotonic_ns() +
+                        (180 if starting else 60) * 1_000_000_000)
+                    value = current_observer._call(dict(action='native-current', plan_digest=digest(plan)))
+                    if value.get('plan_digest') != digest(plan):
+                        raise OnboardingError('current_onboarding_target_required')
                 if (value.get('responder_association') != 'same-connection'
                         or any(value['origin'].get(key) != expected[key]
                             for key in ('body_ref', 'embodiment_id', 'incarnation_id'))
-                        or (value.get('group') is not None) != receive_only_group):
+                        or (value.get('group') is not None) != with_group):
                     raise OnboardingError('native_code_update_identity_changed')
-                _code_update_group(value)
+                _code_update_group(value, published=published_group)
                 return value
             previous_completed = None
             if path.exists():
                 state = being_seed._read(path)
+                if reconcile_existing:
+                    required = {'validate', 'quiesce', 'migrate', 'select', 'start'}
+                    prior = state.get('pins', {})
+                    bootstrap = state.get('capability_bootstrap', {})
+                    restored = (state.get('dispatching') == 'migrate'
+                        and set(state.get('effects', {})) == {'validate', 'quiesce'}
+                        and bootstrap.get('mode') == 'expand'
+                        and type(bootstrap.get('expires_at_ms')) is int
+                        and bootstrap['expires_at_ms'] <= time.time_ns() // 1_000_000)
+                    if (prior.get('operation_id') != operation_id
+                            or prior.get('plan_digest') != digest(plan)
+                            or prior.get('published_group') is not True
+                            or prior.get('candidate_digest') == candidate[1]
+                            or not restored and state.get('dispatching') is not None
+                            or state.get('result') is not None
+                            or not restored and set(state.get('effects', {})) != required):
+                        raise OnboardingError('native_code_update_operation_conflict')
+                    current = observe(starting=not restored)
+                    if (current['runtime_sha256'] != state.get('effective_runtime_sha256', state['runtime_sha256'])
+                            or current['origin'] != state['origin']):
+                        raise OnboardingError('native_code_update_identity_changed')
+                    if _code_update_group(current, published=True) != state.get('closed_group'):
+                        raise OnboardingError('native_code_update_group_changed')
+                    if current['runtime_status']['loaded_runtime'].get(
+                            'qualified_startup', {}).get('code_digest') != candidate[1]:
+                        raise OnboardingError('native_code_update_selection_changed')
+                    previous_parent = (state['request']['predecessor']['admission_parent'] if restored
+                        else state['effects']['start']['admission_parent'])
+                    physical = self.backend._guest_service_call(plan, 'bootstrap-inspect',
+                        candidate=candidate, timeout_seconds=remaining(), owner_observation=dict(
+                            **{key: current[key] for key in ('process', 'admission_parent')},
+                            previous_admission_parent=previous_parent),
+                        **({'implementation':recovery_implementation}
+                           if recovery_implementation is not None else {}))
+                    exit_receipt = physical.get('previous_admission_parent')
+                    if (exit_receipt != dict(process=previous_parent, exited=True)
+                            or physical['scope']['admission_parent'] != current['admission_parent']
+                            or physical['scope']['process'] != current['process']
+                            or store._load(plan['name']) != job):
+                        raise OnboardingError('native_code_update_reconciliation_changed')
+                    if restored:
+                        before = state['request']['predecessor']['service']
+                        after = physical['service']
+                        # A later restart is not proof of an unchanged selection.
+                        # Check every effective service byte, not its new PID.
+                        if (current['runtime_sha256'] != state['runtime_sha256']
+                                or {key: value for key, value in after.items() if key != 'manager'}
+                                    != {key: value for key, value in before.items() if key != 'manager'}):
+                            raise OnboardingError('native_code_update_reconciliation_changed')
+                    # Resolve the retained attempt truthfully. Its requested code
+                    # and confirmed effects remain unchanged, with no fabricated
+                    # original result and no stop/select/start or catalog rewrite.
+                    result = dict(schema='cluster-native-code-reconciled/v1',
+                        operation_id=operation_id, candidate_digest=candidate[1],
+                        original_candidate_digest=prior['candidate_digest'],
+                        pins_sha256=digest(prior), effects_sha256=digest(state['effects']),
+                        runtime_sha256=current['runtime_sha256'], origin=current['origin'],
+                        process=current['process'], admission_parent=current['admission_parent'],
+                        unit_sha256=physical['service']['unit_sha256'],
+                        previous_admission_parent=exit_receipt,
+                        disposition=('restored-unchanged-predecessor' if restored
+                            else 'superseded-by-observed-successor'),
+                        receiving_readiness='unobserved')
+                    reader = code_update_local_reader(current)
+                    if reader is not None:
+                        result['local_reader'] = reader
+                    state['reconciliation'] = result
+                    save()
+                    return result
                 if state.get('pins') != pins:
-                    prior_pins, prior_result = state.get('pins', {}), state.get('result', {})
+                    prior_pins, prior_result = state.get('pins', {}), state.get('result') or {}
+                    reconciliation = state.get('reconciliation', {})
+                    restored_resolution = (reconciliation.get('disposition') == 'restored-unchanged-predecessor'
+                        and set(state.get('effects', {})) == {'validate', 'quiesce'}
+                        and state.get('dispatching') == 'migrate'
+                        and reconciliation.get('runtime_sha256') == state.get('runtime_sha256')
+                        and reconciliation.get('previous_admission_parent') == dict(
+                            process=state.get('request', {}).get('predecessor', {}).get('admission_parent'), exited=True))
+                    reconciled = (reconciliation.get('schema') == 'cluster-native-code-reconciled/v1'
+                        and reconciliation.get('operation_id') == prior_pins.get('operation_id')
+                        and reconciliation.get('original_candidate_digest') == prior_pins.get('candidate_digest')
+                        and reconciliation.get('pins_sha256') == digest(prior_pins)
+                        and reconciliation.get('effects_sha256') == digest(state.get('effects', {}))
+                        and (restored_resolution or (
+                            reconciliation.get('disposition') == 'superseded-by-observed-successor'
+                            and reconciliation.get('previous_admission_parent') == dict(
+                                process=state.get('effects', {}).get('start', {}).get('admission_parent'), exited=True))))
                     if (prior_pins.get('operation_id') == operation_id
-                            or state.get('dispatching') is not None
+                            or state.get('dispatching') is not None and not (reconciled and restored_resolution)
                             or len(json.dumps(state).encode()) > 65536
-                            or set(state.get('effects', {})) != {'validate', 'quiesce', 'select', 'start'}
-                            or prior_result.get('operation_id') != prior_pins.get('operation_id')
-                            or prior_result.get('candidate_digest') != prior_pins.get('candidate_digest')
-                            or prior_result.get('schema') != 'cluster-native-code-updated/v1'):
+                            or not (reconciled and restored_resolution) and set(state.get('effects', {})) != ({'validate', 'quiesce', 'migrate', 'select', 'start'}
+                                if prior_pins.get('published_group') else {'validate', 'quiesce', 'select', 'start'})
+                            or not (reconciled or (
+                                prior_result.get('operation_id') == prior_pins.get('operation_id')
+                                and prior_result.get('candidate_digest') == prior_pins.get('candidate_digest')
+                                and prior_result.get('schema') == 'cluster-native-code-updated/v1'))):
                         raise OnboardingError('native_code_update_operation_conflict')
                     previous_completed = state
+            elif reconcile_existing:
+                raise OnboardingError('native_code_update_operation_conflict')
             # Mounted public code is not an installed owner interpreter. This
             # existing idempotent stage also prepares its closed import tree.
+            sdk_seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
+            if sdk_seconds <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
             sdk = self.backend._target_call(plan, 'sdk-prepare', candidate=candidate,
-                observation_timeout_seconds=remaining())
+                observation_timeout_seconds=min(300.0, sdk_seconds))
             if sdk.get('ready') is not True:
                 raise OnboardingError('native_code_update_sdk_unready')
             if not path.exists() or previous_completed is not None:
                 before = observe()
+                capability_bootstrap = None
+                if additions:
+                    frozen = self.backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
+                        bootstrap_timeout_seconds=remaining(), bootstrap_capability_additions=additions)
+                    horizon = time.time_ns() // 1_000_000 + max(1, (deadline - time.monotonic_ns()) // 1_000_000)
+                    if (frozen.get('mode') != 'expand' or frozen['runtime_sha256'] != before['runtime_sha256']
+                            or frozen['origin'] != before['origin'] or frozen['capability_additions'] != additions
+                            or frozen['predecessor'] != {key: before[key] for key in ('process', 'admission_parent')}):
+                        raise OnboardingError('native_code_update_migration_binding_changed')
+                    preservation_authorization(frozen['preservation'], horizon)
+                    capability_bootstrap = {key: frozen[key] for key in (
+                        'plan_digest', 'genesis_digest', 'code_digest', 'runtime_sha256', 'group_sha256',
+                        'predecessor', 'mode', 'preservation', 'capability_additions')}
+                    capability_bootstrap.update(schema='cluster-guest-owner-bootstrap/v1',
+                        operation_id=operation_id, expires_at_ms=horizon)
                 previous = {key: before[key] for key in ('process', 'admission_parent')}
                 physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
                     timeout_seconds=remaining(), owner_observation=previous)
                 previous.update(service=physical['service'], scope=physical['scope'])
-                state = dict(pins=pins, runtime_sha256=before['runtime_sha256'],
+                frozen_group = _code_update_group(before, published=published_group)
+                if published_group:
+                    if frozen_group is None:
+                        raise OnboardingError('native_code_update_migration_binding_required')
+                    argv = command(base, receive_only=False, runtime_code=code, runtime_digest=candidate[1],
+                        visibility=Path(frozen_group['selected']['visibility']),
+                        messaging_application=Path(frozen_group['selected']['application']))
+                state = dict(pins=pins, runtime_sha256=before['runtime_sha256'], origin=before['origin'],
                     request=dict(schema='cluster-guest-service-bootstrap/v1', operation_id=operation_id,
                         plan_digest=digest(plan), predecessor=previous, argv=argv), effects={})
+                if capability_bootstrap is not None:
+                    state['capability_bootstrap'] = capability_bootstrap
+                if previous['service'].get('entrypoint_selector') is not None:
+                    state['request']['runtime_update'] = True
                 if before.get('group') is not None:
-                    state['closed_group'] = _code_update_group(before)
+                    state['closed_group'] = frozen_group
                 if previous_completed is not None:
                     # The native bootstrap journal retains the exact historical
                     # effects. These two bounded owner records are observations.
                     being_seed._write(directory / 'native-code-update.previous.json', previous_completed)
                     state['previous_completed_sha256'] = digest(previous_completed)
                 save()
-            for action in ('validate', 'quiesce', 'select', 'start'):
+            actions = ('validate', 'quiesce', 'migrate', 'select', 'start') if published_group else (
+                'validate', 'quiesce', 'select', 'start')
+            for action in actions:
                 if action in state['effects']:
                     continue
                 # Retain the exact request before dispatch. Root's bootstrap
                 # reconciles this same operation; never mint a replacement ID.
                 state['dispatching'] = action
                 save()
-                state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
-                    candidate=candidate, timeout_seconds=remaining(), request=state['request'])
+                if action == 'migrate':
+                    migrated = self.backend._target_call(plan, 'visibility-migrate',
+                        candidate=candidate, observation_timeout_seconds=max(0.0, min(300.0,
+                            (deadline - time.monotonic_ns()) / 1_000_000_000)), visibility_migration=dict(
+                            operation_id=operation_id, runtime_sha256=state['runtime_sha256'],
+                            origin=state['origin'], group=state['closed_group'],
+                            **({'capability_bootstrap': state['capability_bootstrap']}
+                               if 'capability_bootstrap' in state else {})))
+                    if 'capability_bootstrap' in state:
+                        if (migrated.get('predecessor_runtime_sha256') != state['runtime_sha256']
+                                or migrated.get('capability_bootstrap_sha256') != digest(state['capability_bootstrap'])
+                                or not isinstance(migrated.get('runtime_sha256'), str)
+                                or re.fullmatch('[0-9a-f]{64}', migrated['runtime_sha256']) is None):
+                            raise OnboardingError('native_code_update_migration_binding_changed')
+                        expected_runtime = migrated['runtime_sha256']
+                    else:
+                        expected_runtime = state['runtime_sha256']
+                    if (migrated.get('schema') != 'cluster-native-visibility-migrated/v1'
+                            or migrated.get('operation_id') != operation_id
+                            or migrated.get('runtime_sha256') != expected_runtime
+                            or migrated.get('group') != state['closed_group']
+                            or type(migrated.get('catalog_schema_version')) is not int):
+                        raise OnboardingError('native_code_update_migration_binding_changed')
+                    state['effects'][action] = migrated
+                    if 'capability_bootstrap' in state:
+                        state['effective_runtime_sha256'] = expected_runtime
+                else:
+                    state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
+                        candidate=candidate, timeout_seconds=remaining(), request=state['request'])
                 state.pop('dispatching', None)
                 save()
-            current = observe()
-            if current['runtime_sha256'] != state['runtime_sha256']:
+            current = observe(starting=True)
+            if current['runtime_sha256'] != state.get('effective_runtime_sha256', state['runtime_sha256']):
                 raise OnboardingError('native_code_update_identity_changed')
-            if _code_update_group(current) != state.get('closed_group'):
+            if _code_update_group(current, published=published_group) != state.get('closed_group'):
                 raise OnboardingError('native_code_update_group_changed')
-            if receive_only_group and current.get('runtime_status', {}).get(
+            if with_group and current.get('runtime_status', {}).get(
                     'loaded_runtime', {}).get('qualified_startup', {}).get('code_digest') != candidate[1]:
+                raise OnboardingError('native_code_update_selection_changed')
+            if published_group and current['group_runtime_status']['loaded_application'][
+                    'visibility']['catalog_schema_version'] != state['effects']['migrate']['catalog_schema_version']:
                 raise OnboardingError('native_code_update_selection_changed')
             physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
                 timeout_seconds=remaining(), owner_observation={key: current[key]
                     for key in ('process', 'admission_parent')})
             if (physical['service']['unit_sha256'] != state['effects']['select']['selected_sha256']
-                    or physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']
                     or store._load(plan['name']) != job):
                 raise OnboardingError('native_code_update_selection_changed')
+            selected_override = state['effects']['select'].get('selector')
+            if (selected_override is not None and physical['service'].get('entrypoint_selector') != dict(
+                    path=selected_override['path'],sha256=selected_override['selected_sha256'])):
+                raise OnboardingError('native_code_update_selection_changed')
+            if physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']:
+                # A successful start can fail readiness and be replaced by the
+                # existing unit's Restart policy. Reuse root's proved-successor
+                # observer; never issue another start or erase the first receipt.
+                successor = {**{key: current[key] for key in ('process', 'admission_parent')},
+                    'service': physical['service']}
+                implementation = candidate if recovery_implementation is None else recovery_implementation
+                recovery = state.get('start_recovery_request')
+                if recovery is not None and (recovery.get('successor') != successor
+                        or recovery.get('implementation_sha256') != implementation[1]
+                        or state.get('start_recovery_receipt') is None
+                            and recovery.get('expires_at_ms',0) <= time.time_ns() // 1_000_000):
+                    # This is a fresh observation of an existing automatic
+                    # successor, never renewal of start/input authority. Keep
+                    # the old request/uncertain result under the same65KiB cap.
+                    state.setdefault('start_recovery_history',[]).append(dict(
+                        request=recovery, receipt=state.pop('start_recovery_receipt',None)))
+                    recovery = None
+                if recovery is None:
+                    recovery = dict(schema='cluster-guest-start-recovery/v1',
+                        operation_id=str(uuid.uuid5(uuid.UUID(operation_id),
+                            'native-code-start-recovery:'+implementation[1]+':'+digest(successor)+':'+
+                            str(len(state.get('start_recovery_history',[]))))),
+                        bootstrap=state['request'], started_sha256=digest(state['effects']['start']),
+                        successor=successor, implementation_sha256=implementation[1],
+                        expires_at_ms=time.time_ns() // 1_000_000 + max(1,
+                            (deadline-time.monotonic_ns()) // 1_000_000))
+                    state['start_recovery_request'] = recovery
+                    save()
+                if (recovery.get('successor') != successor
+                        or recovery.get('bootstrap') != state['request']
+                        or recovery.get('started_sha256') != digest(state['effects']['start'])
+                        or recovery.get('implementation_sha256') != implementation[1]):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+                receipt = state.get('start_recovery_receipt')
+                if receipt is None:
+                    receipt = self.backend._guest_service_call(plan, 'bootstrap-recover-start',
+                        candidate=candidate, timeout_seconds=remaining(), request=recovery,
+                        implementation=implementation)
+                if (receipt.get('schema') != 'cluster-guest-start-successor/v1'
+                        or receipt.get('recovery_operation_id') != recovery['operation_id']
+                        or receipt.get('recovery_sha256') != digest(recovery)
+                        or receipt.get('bootstrap_sha256') != digest(state['request'])
+                        or receipt.get('started_sha256') != digest(state['effects']['start'])
+                        or receipt.get('implementation_sha256') != implementation[1]
+                        or receipt.get('predecessor_parent') != state['effects']['start']['admission_parent']
+                        or receipt.get('predecessor_exited') is not True
+                        or receipt.get('manager') != physical['service']['manager']
+                        or receipt.get('scope') != physical['scope']
+                        or receipt.get('unit_sha256') != state['effects']['select']['selected_sha256']):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+                state['start_recovery_receipt'] = receipt
+                save()
             state['result'] = dict(schema='cluster-native-code-updated/v1',
                 operation_id=operation_id, candidate_digest=candidate[1],
                 runtime_sha256=current['runtime_sha256'], origin=current['origin'],
                 process=current['process'], admission_parent=current['admission_parent'],
                 unit_sha256=physical['service']['unit_sha256'], receiving_readiness='unobserved')
+            local_reader = code_update_local_reader(current)
+            if local_reader is not None:
+                state['result']['local_reader'] = local_reader
             save()
             return state['result']
 
@@ -865,3 +1115,541 @@ class ManagedRuntime:
                 except (OnboardingError, OSError):
                     pass  # The retained reassessment remains explicitly pending.
             raise
+
+
+def validate_code_update(spec: dict) -> dict:
+    """One bounded operator request over existing jobs, placements and effects."""
+    try:
+        if (not isinstance(spec, dict) or set(spec) - {'reader_completion','owner_observation','recovery_implementation','reconcile_existing','capability_additions'} != {
+                'schema', 'host_config', 'vm_qualification', 'candidate', 'targets', 'group', 'operation_id', 'max_seconds'}
+                or spec['schema'] != 'cluster-native-code-maintenance/v1'
+                or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 480
+                or not isinstance(spec['candidate'], dict)
+                or set(spec['candidate']) != {'code', 'code_digest'}
+                or re.fullmatch('[0-9a-f]{64}', spec['candidate']['code_digest']) is None
+                or not isinstance(spec['targets'], list) or not 1 <= len(spec['targets']) <= 16
+                or spec['group'] not in {'none', 'closed', 'published'}
+                or str(uuid.UUID(spec['operation_id'])) != spec['operation_id']
+                or not isinstance(spec['host_config'], str)
+                or not isinstance(spec['candidate']['code'], str)):
+            raise ValueError
+        if ('reconcile_existing' in spec and (spec['reconcile_existing'] is not True
+                or spec['group'] != 'published' or spec.get('owner_observation') is None)):
+            raise ValueError
+        if 'capability_additions' in spec:
+            from .onboarding_receiving_update import guest_capability_additions
+            guest_capability_additions(spec['capability_additions'])
+            if spec['group'] != 'published' or spec.get('reconcile_existing'):
+                raise ValueError
+        implementation = spec.get('recovery_implementation')
+        if implementation is not None and (not isinstance(implementation,dict)
+                or set(implementation) != {'code','code_digest'}
+                or not isinstance(implementation['code'],str)
+                or not isinstance(implementation['code_digest'],str)
+                or re.fullmatch('[0-9a-f]{64}',implementation['code_digest']) is None):
+            raise ValueError
+        for path in (spec['host_config'], spec['candidate']['code'], spec['vm_qualification'],
+                     spec.get('reader_completion'), spec.get('owner_observation'),
+                     None if implementation is None else implementation['code']):
+            if path is not None and (not isinstance(path, str) or not Path(path).is_absolute()
+                    or '..' in Path(path).parts):
+                raise ValueError
+        names = set()
+        for name in spec['targets']:
+            if re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', name) is None or name in names:
+                raise ValueError
+            names.add(name)
+    except (TypeError, ValueError, AttributeError, KeyError):
+        raise OnboardingError('native_code_maintenance_spec_required') from None
+    return spec
+
+
+class ReaderCommandClient:
+    """Reuse protected owner CLI routes; no network listener or new authority."""
+
+    def __init__(self, binding: dict, *, backend=None, plan=None):
+        self.root = Path(binding['root'])
+        self.command = binding['command']
+        self.backend, self.plan = backend, plan
+        self.deadline_ns: int | None = None
+        self.expected: dict | None = None
+
+    def _call(self, value: dict) -> dict:
+        import subprocess
+        from .onboarding_receiving_update import _run_owner
+        if self.deadline_ns is None:
+            raise OnboardingError('receiving_owner_deadline_binding_required')
+        maximum = 175.0 if value.get('action') == 'native-current' else 55.0
+        remaining = min(maximum, (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+        if remaining <= 0:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        try:
+            argv = [*self.command, '--reader-rpc', '--max-seconds', str(remaining)]
+            if self.backend is not None:
+                from types import SimpleNamespace
+                result = SimpleNamespace(returncode=0, stdout=self.backend.execute_body(self.plan,
+                    argv, uid=1000, gid=1000, input_data=json.dumps(value),
+                    timeout_seconds=remaining, deadline_ns=self.deadline_ns))
+            else:
+                result = _run_owner(argv, input=json.dumps(value), text=True,
+                    capture_output=True, timeout=remaining)
+            if time.monotonic_ns() >= self.deadline_ns:
+                raise OnboardingError('receiving_owner_deadline_expired')
+            if result.returncode and any(line.startswith('ModuleNotFoundError:')
+                    for line in getattr(result, 'stderr', '').splitlines()):
+                raise OnboardingError('receiving_reader_owner_import_unavailable')
+            if result.returncode:
+                # Owner CLIs publish a closed diagnostic vocabulary. Preserve
+                # that actual refusal rather than mislabeling every failed
+                # control as a transport outage; never propagate arbitrary text.
+                from .onboarding_owner_control import PUBLIC_ERRORS
+                try:
+                    refusal = json.loads(getattr(result,'stderr',''))
+                except ValueError:
+                    refusal = None
+                if (isinstance(refusal,dict) and set(refusal) == {'error'}
+                        and isinstance(refusal['error'],str) and refusal['error'] in PUBLIC_ERRORS):
+                    raise OnboardingError(refusal['error'])
+                raise ValueError
+            if len(result.stdout.encode()) > being_seed.MAX_SELECTION:
+                raise ValueError
+            observed = json.loads(result.stdout)
+            if not isinstance(observed, dict) or 'error' in observed:
+                raise ValueError
+            return observed
+        except OnboardingError:
+            raise
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            raise OnboardingError('receiving_reader_owner_unavailable') from None
+
+    def current_reader(self, **options):
+        proof = self._call(dict(action='observe', options=options))
+        if proof.get('expected', {}).get('selection') != options['expected_selection']:
+            raise OnboardingError('receiving_cohort_selection_changed')
+        self.expected = proof['expected']
+        return proof
+
+    def prepare_apply_control(self, command: dict, path: Path):
+        prefix = command['operation_id'] + '-' + command['phase']
+        slot = None if path.name == prefix+'.json' else path.name.removeprefix(prefix+'-').removesuffix('.json')
+        if (self.expected is None or path.parent != self.root/'receiving-control'
+                or slot is not None and (re.fullmatch('[0-9a-f]{64}',slot) is None
+                    or path.name != prefix+'-'+slot+'.json')):
+            raise OnboardingError('receiving_control_binding_conflict')
+        return self._call(dict(action='control', command=command, expected=self.expected,
+            **({} if slot is None else {'slot':slot})))
+
+
+def load_code_update_readers(path: Path) -> dict:
+    """Locators select existing owner CLIs; native signed rosters select members."""
+    value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
+    if (not isinstance(value, dict) or set(value) - {'host_config','vm_qualification'} != {'schema', 'checkpoint', 'owners'}
+            or value.get('schema') != 'cluster-maintenance-reader-routes/v1'
+            or not isinstance(value['owners'], dict) or not 1 <= len(value['owners']) <= 256):
+        raise OnboardingError('receiving_current_reader_binding_required')
+    if ('vm_qualification' in value and 'host_config' not in value
+            or 'host_config' in value and not isinstance(value['host_config'],str)):
+        raise OnboardingError('receiving_current_reader_binding_required')
+    for selected_path in (value.get('host_config'),value.get('vm_qualification')):
+        if selected_path is not None and (not isinstance(selected_path,str)
+                or not Path(selected_path).is_absolute() or '..' in Path(selected_path).parts):
+            raise OnboardingError('receiving_current_reader_binding_required')
+    checkpoint = Path(value['checkpoint'])
+    if not checkpoint.is_absolute() or '..' in checkpoint.parts:
+        raise OnboardingError('receiving_current_reader_binding_required')
+    fields = {'receiving_code', 'matrix_sdk', 'runtime_bundle_sha256', 'application_sha256',
+        'publication_sha256', 'visibility_installation_sha256'}
+    for name, binding in value['owners'].items():
+        if (re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', name) is None
+                or not isinstance(binding, dict)
+                or set(binding) - {'job'} != {'root', 'command', 'selection', 'require_admitted'}
+                or 'job' in binding and (not isinstance(binding['job'], str)
+                    or re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', binding['job']) is None)
+                or type(binding['require_admitted']) is not bool
+                or not isinstance(binding['root'], str) or not Path(binding['root']).is_absolute()
+                or '..' in Path(binding['root']).parts
+                or not isinstance(binding['command'], list) or not 1 <= len(binding['command']) <= 64
+                or any(not isinstance(arg, str) or not 1 <= len(arg) <= 16384 or '\0' in arg
+                    for arg in binding['command'])
+                or not (binding['selection'] is None and 'job' in binding
+                    or isinstance(binding['selection'], dict) and set(binding['selection']) == fields
+                    and all(item is None and key == 'visibility_installation_sha256'
+                        or isinstance(item, str) and re.fullmatch('[0-9a-f]{64}', item) is not None
+                        for key, item in binding['selection'].items()))):
+            raise OnboardingError('receiving_current_reader_binding_required')
+    return value
+
+
+def code_update_reader_clients(value: dict, *, backend=None, plans=None) -> dict:
+    # Reader jobs can belong to a different existing registry than the bodies
+    # being updated. Keep those plans/placements with their owning executor.
+    if 'host_config' in value:
+        names = {binding['job'] for binding in value['owners'].values() if 'job' in binding}
+        if names:
+            backend, plans = maintenance_backend(value['host_config'],value.get('vm_qualification'),names)
+    clients = {}
+    for name, binding in value['owners'].items():
+        if 'job' in binding:
+            if backend is None or plans is None or binding['job'] not in plans:
+                raise OnboardingError('receiving_current_reader_binding_required')
+            clients[name] = ReaderCommandClient(binding, backend=backend, plan=plans[binding['job']])
+        else:
+            clients[name] = ReaderCommandClient(binding)
+    return clients
+
+
+def complete_code_update_readers(value: dict, *, operation_id: str,
+                                 release_digest: str, deadline_ns: int, backend=None, plans=None,
+                                 updates: dict | None = None) -> dict:
+    """Resolve existing owner routes once, then use the native cohort completer."""
+    from .onboarding_receiving_update import refresh_current_readers
+    from .onboarding_owner_control import _selection
+    clients = code_update_reader_clients(value, backend=backend, plans=plans)
+    selections = {name: row['selection'] for name, row in value['owners'].items()}
+    for name, binding in value['owners'].items():
+        receipt = (updates or {}).get(binding.get('job',name))
+        if selections[name] is not None and receipt is None:
+            continue
+        if (not isinstance(receipt, dict) or receipt.get('operation_id') != operation_id
+                or receipt.get('candidate_digest') != release_digest):
+            raise OnboardingError('receiving_code_update_receipt_required')
+        client = clients[name]
+        client.deadline_ns = deadline_ns
+        observed = client._call(dict(action='status'))
+        selection = _selection(observed)
+        if (observed.get('process') != receipt.get('process')
+                or observed.get('server') != receipt.get('origin')
+                or selection['receiving_code'] != release_digest
+                or selection['runtime_bundle_sha256'] != receipt['runtime_sha256']):
+            raise OnboardingError('receiving_cohort_selection_changed')
+        selections[name] = selection
+    return refresh_current_readers(clients, selections=selections,
+        operation_id=operation_id, release_digest=release_digest, deadline_ns=deadline_ns,
+        checkpoint=Path(value['checkpoint']), nonadmitted=frozenset(name for name, row in value['owners'].items()
+            if not row['require_admitted']))
+
+
+def maintenance_backend(host_config: str, vm_qualification: str | None, names) -> tuple:
+    """Reuse current job placements for software and reader maintenance."""
+    from .onboarding_host import HostBackend, HostConfig
+    config = HostConfig.load(Path(host_config))
+    jobs = JobStore(config.jobs)
+    plans = {name: jobs._load(name)['plan'] for name in names}
+    runner = None
+    if vm_qualification is not None:
+        from .vm_body import RemoteIncusRunner
+        qualification = Path(vm_qualification)
+        admitted = being_seed._read(qualification / 'receiving.json')
+        placements = {name: (qualification / (name + '-placement.json'),
+            admitted['results'][name]['placement_sha256']) for name in plans}
+        def no_initial_publication(*_, **__):
+            raise OnboardingError('native_code_maintenance_existing_body_required')
+        runner = RemoteIncusRunner(placements, plans, publish=no_initial_publication)
+    backend = HostBackend(config, run=runner)
+    return backend, plans
+
+
+def code_update_owned_stops(backend, plans: dict, spec: dict) -> set[str]:
+    """Find exact retained operations that may own an unavailable reader."""
+    admission = getattr(getattr(backend,'config',None),'admission',None)
+    if admission is None:
+        return set()
+    settings = being_seed._read(admission)
+    state = Path(settings['state'])
+    if not state.is_absolute() or '..' in state.parts:
+        raise OnboardingError('invalid_onboarding_managed_configuration')
+    owned = set()
+    for name,plan in plans.items():
+        path = state/name/'native-code-update.json'
+        if not path.exists():
+            continue
+        retained = being_seed._read(path)
+        pins = retained.get('pins',{})
+        if (pins.get('operation_id') == spec['operation_id']
+                and pins.get('candidate_digest') == spec['candidate']['code_digest']
+                and pins.get('plan_digest') == digest(plan)
+                and retained.get('result') is None
+                and ('quiesce' in retained.get('effects',{})
+                    or retained.get('dispatching') in {'quiesce','migrate','select','start'})):
+            owned.add(name)
+    return owned
+
+
+def code_update_observers(spec: dict, backend, plans: dict) -> dict:
+    """Resolve only selected body owners through their existing placement."""
+    observers = {}
+    if spec.get('owner_observation') is not None:
+        if spec['group'] == 'none':
+            raise OnboardingError('qualified_onboarding_group_required')
+        routes = load_code_update_readers(Path(spec['owner_observation']))
+        selected = {}
+        for name in spec['targets']:
+            matches = [(key,binding) for key,binding in routes['owners'].items()
+                       if binding.get('job',key) == name]
+            if len(matches) != 1:
+                raise OnboardingError('receiving_current_reader_binding_required')
+            key,binding = matches[0]
+            selected[key] = binding
+        clients = code_update_reader_clients({**routes,'owners':selected}, backend=backend, plans=plans)
+        observers = {binding.get('job',key):clients[key] for key,binding in selected.items()}
+    return observers
+
+
+def code_update_local_reader(current: dict) -> dict | None:
+    """An authenticated local recovery observation, never fleet delivery."""
+    receiving = (current.get('group_runtime_status') or {}).get('receiving', {})
+    gate = receiving.get('channels', {}).get('tribe', {})
+    if gate.get('process_id') != current['process'].get('pid') or gate.get('phase') not in {'select','revoke'}:
+        return None
+    recovery = receiving.get('recovery', {}).get('tribe', {}).get('state')
+    if recovery not in {'recovered','expired','disabled','invalidated','unavailable','unsupported'}:
+        recovery = 'unobserved'
+    return dict(channel_id='tribe', phase=gate['phase'], recovery=recovery)
+
+
+def run_code_status(spec: dict) -> dict:
+    """Inspect desired/loaded code and retained effects; prepare or start nothing."""
+    spec = validate_code_update(spec)
+    if spec.get('owner_observation') is None:
+        raise OnboardingError('receiving_current_reader_binding_required')
+    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
+    backend, plans = maintenance_backend(spec['host_config'], spec['vm_qualification'], spec['targets'])
+    observers = code_update_observers(spec, backend, plans)
+    settings = being_seed._read(backend.config.admission)
+    state_root = Path(settings['state'])
+    if not state_root.is_absolute() or '..' in state_root.parts:
+        raise OnboardingError('invalid_onboarding_managed_configuration')
+    rows = []
+    for name in spec['targets']:
+        phase = 'owner-observation'
+        try:
+            owner = observers[name]
+            owner.deadline_ns = min(deadline, time.monotonic_ns() + 55_000_000_000)
+            current = owner._call(dict(action='native-current', plan_digest=digest(plans[name])))
+            if (current.get('plan_digest') != digest(plans[name])
+                    or current.get('responder_association') != 'same-connection'):
+                raise OnboardingError('current_onboarding_target_required')
+            if _code_update_group(current, published=spec['group'] == 'published') is None:
+                raise OnboardingError('qualified_onboarding_group_required')
+            loaded = current['runtime_status']['loaded_runtime']['qualified_startup']
+            phase = 'retained-operation'
+            operation = None
+            path = state_root / name / 'native-code-update.json'
+            if path.exists():
+                retained = being_seed._read(path)
+                pins = retained['pins']
+                if (pins['plan_digest'] != digest(plans[name])
+                        or str(uuid.UUID(pins['operation_id'])) != pins['operation_id']
+                        or re.fullmatch('[0-9a-f]{64}', pins['candidate_digest']) is None):
+                    raise OnboardingError('native_code_update_operation_conflict')
+                dispatch = retained.get('dispatching')
+                actions = {'validate','quiesce','migrate','select','start'}
+                operation = dict(operation_id=pins['operation_id'],
+                    candidate_digest=pins['candidate_digest'], complete=retained.get('result') is not None,
+                    dispatching=dispatch if dispatch in actions else None,
+                    effects=sorted(actions.intersection(retained.get('effects', {}))))
+                if retained.get('reconciliation') is not None:
+                    resolution = retained['reconciliation']
+                    operation['reconciliation'] = dict(
+                        disposition=resolution.get('disposition'),
+                        observed_code=resolution.get('candidate_digest'))
+            rows.append(dict(name=name, status='observed',
+                desired_code=spec['candidate']['code_digest'], loaded_code=loaded['code_digest'],
+                converged=loaded['code_digest'] == spec['candidate']['code_digest'],
+                process=current['process'], admission_parent=current['admission_parent'],
+                local_reader=code_update_local_reader(current), retained_operation=operation))
+        except Exception as error:
+            from .onboarding import refusal_diagnostic
+            rows.append(dict(name=name, status='unavailable', phase=phase,
+                failure=refusal_diagnostic(error, stage='native-code-maintenance')))
+    return dict(schema='cluster-native-code-maintenance-status/v1',
+        complete=all(row['status'] == 'observed' for row in rows), targets=rows,
+        converged=all(row.get('converged') is True for row in rows),
+        effects='observation-only', receiving_readiness='unobserved')
+
+
+def run_code_update(spec: dict) -> dict:
+    """Reuse the owner/unit journals; never create a second batch effect journal."""
+    spec = validate_code_update(spec)
+    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
+    reader_routes = (load_code_update_readers(Path(spec['reader_completion']))
+        if spec.get('reader_completion') is not None else None)
+    if reader_routes is not None:
+        from .onboarding_receiving_update import preflight_reader_checkpoint
+        preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
+    backend, plans = maintenance_backend(spec['host_config'],spec['vm_qualification'],spec['targets'])
+    observers = code_update_observers(spec, backend, plans)
+    if reader_routes is not None:
+        # Resolve owning jobs/placements and probe their existing owner CLIs
+        # before any lifecycle effect; signed rosters still qualify membership.
+        owned_stops = code_update_owned_stops(backend,plans,spec)
+        for name, client in code_update_reader_clients(reader_routes, backend=backend, plans=plans).items():
+            client.deadline_ns = deadline
+            if reader_routes['owners'][name].get('job',name) in owned_stops:
+                continue  # Its native bootstrap revalidates and restores this exact operation.
+            try:
+                client._call(dict(action='status'))
+            except Exception as error:
+                from .onboarding import refusal_diagnostic
+                return dict(schema='cluster-native-code-maintenance-result/v1', complete=False,
+                    candidate_digest=spec['candidate']['code_digest'], targets=[], pending=spec['targets'],
+                    receiving_readiness='unobserved', reader_completion=dict(name=name,
+                        phase='owner-preflight', failure=refusal_diagnostic(error, stage='current-readers')))
+    owner = ManagedRuntime(backend)
+    candidate = (Path(spec['candidate']['code']), spec['candidate']['code_digest'])
+    results = []
+    for name in spec['targets']:
+        # Use the declared batch envelope for cold preparation plus transition.
+        # Individual SDK/migration calls remain capped at300s; a hidden300s
+        # total previously consumed the transition budget during cold install.
+        target_deadline = min(deadline, time.monotonic_ns() + 480_000_000_000)
+        phase = 'prepare'
+        try:
+            if time.monotonic_ns() >= target_deadline:
+                raise OnboardingError('receiving_host_deadline_expired')
+            if not backend.runtime_available(plans[name], candidate, prepare=True,
+                    deadline_ns=target_deadline):
+                raise OnboardingError('qualified_onboarding_candidate_mount_required')
+            phase = 'update'
+            implementation = spec.get('recovery_implementation')
+            recovery_code = None
+            if implementation is not None:
+                recovery_code = (Path(implementation['code']),implementation['code_digest'])
+                if not backend.runtime_available(plans[name],recovery_code,prepare=True,
+                        deadline_ns=target_deadline):
+                    raise OnboardingError('qualified_onboarding_candidate_mount_required')
+            remaining = (target_deadline - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            value = owner.update_native_code(plans[name], candidate,
+                operation_id=spec['operation_id'], timeout_seconds=min(480.0, remaining),
+                receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published',
+                **({'current_observer':observers[name]} if name in observers else {}),
+                recovery_implementation=recovery_code,
+                reconcile_existing=bool(spec.get('reconcile_existing')),
+                **({'capability_additions': spec['capability_additions']}
+                   if 'capability_additions' in spec else {}))
+            results.append(dict(name=name, operation_id=spec['operation_id'],
+                status='reconciled' if spec.get('reconcile_existing') else 'updated', result=value))
+        except Exception as error:
+            # A retained failure may include partial effects. Keep the original
+            # operation ID: another invocation reconciles it, never reenrolls.
+            from .onboarding import refusal_diagnostic
+            results.append(dict(name=name, operation_id=spec['operation_id'], status='incomplete',
+                phase=phase, failure=refusal_diagnostic(error, stage='native-code-maintenance')))
+            break
+    complete = len(results) == len(spec['targets']) and all(
+        row['status'] in {'updated', 'reconciled'} for row in results)
+    readers = None
+    if complete and reader_routes is not None:
+        try:
+            readers = complete_code_update_readers(reader_routes,
+                operation_id=spec['operation_id'], release_digest=candidate[1], deadline_ns=deadline,
+                backend=backend, plans=plans, updates={row['name']: row['result'] for row in results})
+        except Exception as error:
+            from .onboarding import refusal_diagnostic
+            readers = dict(failure=refusal_diagnostic(error, stage='current-readers'))
+            complete = False
+    return dict(schema='cluster-native-code-maintenance-result/v1', complete=complete,
+        candidate_digest=candidate[1], targets=results,
+        pending=spec['targets'][len(results):],
+        receiving_readiness=readers['receiving_readiness'] if readers is not None and 'failure' not in readers
+            else 'unobserved', **({'reader_completion': readers} if readers is not None else {}))
+
+
+def run_native_profile_update(spec: dict, *, check_only: bool = False) -> dict:
+    """Compose the native H8 owner with the SAME current-reader completer."""
+    import json
+    from . import onboarding_release
+    from .rebirth_native import ProfileOwner, run_profile_maintenance
+    from .onboarding_owner_control import _selection
+    from .onboarding_receiving_update import preflight_reader_checkpoint, refresh_current_readers
+    extras = {'reader_completion','host_config','vm_qualification'}
+    core = {key:value for key,value in spec.items() if key not in extras}
+    if not 1 <= core.get('max_seconds',0) <= 180:
+        raise OnboardingError('native_code_maintenance_spec_required')
+    deadline = time.monotonic_ns()+core['max_seconds']*1_000_000_000
+    if spec.get('reader_completion') is None:
+        return run_profile_maintenance(core,check_only=check_only,deadline_ns=deadline)
+    routes = load_code_update_readers(Path(spec['reader_completion']))
+    if not check_only:
+        preflight_reader_checkpoint(Path(routes['checkpoint']),core['operation_id'])
+    names = {binding['job'] for binding in routes['owners'].values() if 'job' in binding}
+    if names:
+        backend, plans = maintenance_backend(spec['host_config'],spec.get('vm_qualification'),names)
+    else:
+        backend, plans = None, None
+    clients = code_update_reader_clients(routes,backend=backend,plans=plans)
+    profile = ProfileOwner(Path(core['profile']))
+    settings = json.loads(onboarding_release.regular(Path(profile.profile()['config']),uid=profile.uid))
+    updated = [name for name,client in clients.items() if str(client.root) == settings['runtime_root']]
+    if len(updated) != 1:
+        raise OnboardingError('receiving_current_reader_binding_required')
+    selections = {}
+    from .operation_journal import OperationJournal
+    retained_journal = OperationJournal.existing(Path(core['journal']))
+    retained = None if retained_journal is None else retained_journal.get(core['operation_id'])
+    for name,client in clients.items():
+        client.deadline_ns = deadline
+        expected = routes['owners'][name]['selection']
+        if (name == updated[0] and retained is not None
+                and retained['state'] != 'completed'
+                and retained['intent'].get('native_profile_maintenance') == core
+                and 'stop_intent' in (retained['runtime_observation'] or {})):
+            # This exact operation may own a stopped service. Requiring its
+            # live reader before resuming would prevent its own recovery.
+            frozen = _selection(retained['expected_precondition']['receiving'])
+            if expected is not None and expected != frozen:
+                raise OnboardingError('receiving_cohort_selection_changed')
+            selections[name] = frozen
+            continue
+        observed = _selection(client._call(dict(action='status')))
+        if (name == updated[0] and retained is not None
+                and retained['intent'].get('native_profile_maintenance') == core):
+            if retained.get('result') is not None:
+                expected = _selection(retained['result']['loaded'])
+            elif observed['receiving_code'] == core['candidate']['code_digest']:
+                expected = None  # The retained native operation revalidates this candidate below.
+        if expected is not None and observed != expected:
+            raise OnboardingError('receiving_cohort_selection_changed')
+        selections[name] = observed
+    result = run_profile_maintenance(core,check_only=check_only,deadline_ns=deadline)
+    if check_only:
+        return {**result,'reader_routes_observed':len(clients)}
+    selections[updated[0]] = _selection(result['loaded'])
+    result['reader_completion'] = refresh_current_readers(clients,selections=selections,
+        operation_id=core['operation_id'],release_digest=core['candidate']['code_digest'],
+        deadline_ns=deadline,checkpoint=Path(routes['checkpoint']),
+        nonadmitted=frozenset(name for name,binding in routes['owners'].items() if not binding['require_admitted']))
+    result['receiving_readiness'] = result['reader_completion']['receiving_readiness']
+    return result
+
+
+def main(argv=None) -> int:
+    import argparse
+    import os
+    from .onboarding import refusal_diagnostic
+    parser = argparse.ArgumentParser(description='Bounded code/SDK maintenance of existing admitted bodies')
+    parser.add_argument('--spec', type=Path, required=True,
+        help='retained root-owned private code or native-profile maintenance JSON')
+    parser.add_argument('--check-only', action='store_true',
+        help='Inspect desired/loaded native code and retained operations without lifecycle effects')
+    args = parser.parse_args(argv)
+    try:
+        if os.geteuid() != 0:
+            raise OnboardingError('native_code_maintenance_root_required')
+        spec = being_seed._read(args.spec, limit=65536)
+        if spec.get('schema') == 'cluster-native-profile-maintenance/v1':
+            result = run_native_profile_update(spec,check_only=args.check_only)
+        else:
+            result = run_code_status(spec) if args.check_only else run_code_update(spec)
+        print(json.dumps(result))
+        return 0 if result.get('complete') or result.get('qualified') else 1
+    except Exception as error:
+        print(json.dumps(dict(schema='cluster-native-code-maintenance-result/v1', complete=False,
+            failure=refusal_diagnostic(error, stage='native-code-maintenance'))))
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

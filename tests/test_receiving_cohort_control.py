@@ -2271,3 +2271,23 @@ def test_initial_member_revoke_uses_v2_finite_proof_horizon(tmp_path, monkeypatc
     assert accepted['process'] == owners['newcomer'].process
     assert accepted['gate']['phase'] == 'revoke' and accepted['gate']['readers'] == []
     assert 'expires_at_ms' not in records['newcomer']['reader']
+
+
+@pytest.mark.parametrize('code,fallback', [('invalid_params',True), ('runtime_unavailable',False), ('capability_denied',False)])
+def test_compact_status_needs_only_status_grant_and_exact_old_view_refusal(code,fallback):
+    from types import SimpleNamespace
+    from clusterctl.onboarding_receiving_update import receiving_status_response
+    calls=[]
+    refusal={'ok':False,'error':{'code':code}}
+    class StatusOnly:
+        config=SimpleNamespace(capability=SimpleNamespace(methods=['runtime.status']))
+        def invoke(self,method,params):
+            calls.append((method,params))
+            return None,refusal
+        def runtime_status(self):
+            calls.append(('legacy',{}))
+            return None,{'ok':True,'result':{'legacy':True}}
+    result=receiving_status_response(StatusOnly())
+    assert calls[0]==('runtime.status',{'view':'receiving'})
+    assert calls[1:]==([('legacy',{})] if fallback else [])
+    assert result==({'ok':True,'result':{'legacy':True}} if fallback else refusal)

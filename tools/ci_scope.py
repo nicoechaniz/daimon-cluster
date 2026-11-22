@@ -400,6 +400,8 @@ LOADED_STARTUP_TESTS = ('tests/test_onboarding_sdk.py', 'tests/test_onboarding_c
 
 
 HOME_FILES = {'clusterctl/homes/fleet.py', 'clusterctl/homes/fleet_reader.py', 'clusterctl/homes/observability.py',
+    'clusterctl/homes/usage.py', 'clusterctl/homes/usage_probe.py', 'tests/test_home_usage.py',
+    'docs/runbooks/cluster-home-dashboard.md',
     'clusterctl/homes/assets/cluster.html', 'clusterctl/homes/assets/cluster.js', 'clusterctl/homes/assets/cluster.css',
     'tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'tests/test_home_observability.py',
     'deploy/fleet-reader/cluster-fleet-reader.socket', 'deploy/fleet-reader/cluster-fleet-reader@.service',
@@ -439,7 +441,7 @@ HOME_FILES = {'clusterctl/homes/fleet.py', 'clusterctl/homes/fleet_reader.py', '
     'clusterd/assets/fonts/OFL.txt', 'clusterd/assets/fonts/PROVENANCE.json',
     'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
     'tests/test_home_owner_authority.py', 'tests/test_home_web_identities.py'}
-HOME_TESTS = ('tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'tests/test_home_observability.py', 'tests/test_home_web_identities.py', 'tests/test_home_wsgi.py', 'tests/test_home_owner_authority.py', 'tests/test_home_launcher.py', 'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
+HOME_TESTS = ('tests/test_home_usage.py', 'tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'tests/test_home_observability.py', 'tests/test_home_web_identities.py', 'tests/test_home_wsgi.py', 'tests/test_home_owner_authority.py', 'tests/test_home_launcher.py', 'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
               'tests/test_home_passkeys.py', 'tests/test_home_client.py', 'tests/test_home_styles.py', 'tests/test_home_login.py', 'tests/test_home_homemaker.py',
               'tests/test_home_live_review.py', 'tests/test_home_review_notes.py', 'tests/test_auth.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
@@ -794,6 +796,18 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    visibility_rollout_files = {'tools/tribe_visibility.py','tests/test_tribe_visibility.py',
+                                'docs/operations/tribe-visibility.md'}
+    visibility_rollout_tests = ['tests/test_tribe_visibility.py',
+        'tests/test_native_code_maintenance_cli.py','tests/test_onboarding_owner_control.py',
+        'tests/test_ci_scope.py','tests/test_ci_workflow.py']
+    if ({'tools/tribe_visibility.py','tests/test_tribe_visibility.py'} <= set(changed)
+            and set(changed) <= visibility_rollout_files | CI_FILES
+            and all((root / path).is_file() for path in visibility_rollout_tests)):
+        # This operator calls unchanged native owners. Keep its consumers and
+        # process/CLI contracts; changes to any owner/transport/SDK retain full CI.
+        return 'peer', visibility_rollout_tests
+
     coordinator_files = {'clusterctl/onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_finisher.py'}
@@ -1062,6 +1076,16 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and set(changed) <= advisory_files | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in advisory_tests)):
         return 'peer', advisory_tests
+    incus_provenance_files = {'tools/children_incus_provenance.py',
+        'tests/test_children_incus_provenance.py', 'docs/operations/children-application-inventory.md'}
+    incus_provenance_tests = ['tests/test_children_incus_provenance.py',
+        'tests/test_children_package_selection.py', 'tests/test_children_package_guard.py',
+        'tests/test_children_application_inventory.py', 'tests/test_children_daily.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'tools/children_incus_provenance.py', 'tests/test_children_incus_provenance.py'}
+            and set(changed) <= incus_provenance_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/name).is_file() for name in incus_provenance_tests)):
+        return 'peer', incus_provenance_tests
     application_files = {'tools/children_application_inventory.py',
         'tests/test_children_application_inventory.py','tools/children_daily.py',
         'tests/test_children_daily.py','docs/operations/children-application-inventory.md',

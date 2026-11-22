@@ -88,6 +88,17 @@ _DIAGNOSTIC_CODES = frozenset({
     'companion_home_configuration_required',
     'onboarding_vm_image_required', 'onboarding_vm_agent_unavailable', 'conversation_proxy_vm_network_required',
     'seed_operation_in_progress', 'qualified_runtime_module_required',
+    'native_code_maintenance_spec_required', 'native_code_maintenance_root_required',
+    'native_code_maintenance_existing_body_required', 'receiving_host_deadline_expired',
+    'native_code_update_migration_unconfirmed', 'native_code_update_migration_binding_changed',
+    'receiving_reader_owner_unavailable', 'receiving_reader_owner_import_unavailable',
+    'receiving_current_reader_binding_required', 'receiving_code_update_receipt_required',
+    'receiving_reader_checkpoint_unresolved',
+    'receiving_control_binding_conflict', 'receiving_control_process_changed',
+    'receiving_control_not_accepted', 'receiving_control_completion_uncertain',
+    'receiving_owner_deadline_expired',
+    'receiving_guest_capability_additions_required', 'receiving_guest_capability_preservation_required',
+    'qualified_owner_event_read_sdk_required',
     'qualified_runtime_imports_required', 'qualified_runtime_context_required',
     'qualified_receiving_interpreter_required', 'private_onboarding_sdk_required',
     'installed_onboarding_sdk_changed', 'onboarding_sdk_digest_mismatch',
@@ -153,6 +164,15 @@ def refusal_diagnostic(error: Exception, *, stage: str) -> dict:
     elif isinstance(error, TimeoutError):
         code = 'local_operation_timed_out'
     elif isinstance(error, RuntimeError):
+        # Optional native-profile operators are not part of every closed guest
+        # helper. Inspect already-loaded typed errors without importing their
+        # wider H8 dependency closure into ordinary refusal reporting.
+        import sys
+        native = sys.modules.get('clusterctl.rebirth_native')
+        host = sys.modules.get('clusterctl.rebirth_host')
+        if (isinstance(error, getattr(host, 'RebirthHostError', ()))
+                and str(error) in getattr(native, 'PROFILE_ERRORS', ())):
+            code = str(error)
         # Matrix remains optional for ordinary Cluster commands. Only typed,
         # explicitly selected transport observations may cross this boundary.
         try:

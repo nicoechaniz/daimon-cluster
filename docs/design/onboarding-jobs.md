@@ -838,6 +838,18 @@ An existing changed unit is preserved and refused. Omitting `--activate`
 installs without starting. The worker uses the same engine and policy as web,
 agent API and CLI; no active Codex conversation is needed.
 
+For an existing installation, preserve its selected `--home-placements` and
+`--runtime-health-registry` arguments when supplying `--replace-unit-sha256`;
+omitting an optional argument constructs a unit without that integration. Compare
+the generated unit with the actual predecessor before dispatch. Public release
+source directories must remain traversable by the gateway owner (0755, as in the
+predecessor); extraction under a private umask does not establish that access.
+Keep private configuration, credentials and environments at their existing modes.
+For the companion hook, `gateway.python` selects the actual gateway owner
+interpreter, not a root-only worker environment. Reuse its existing root-to-owner
+probe on an already registered Home to observe loaded routes, without replaying
+a completed job. A preparation/launcher failure is not a product or peer failure.
+
 
 ### Runtime successors for an already receiving body
 
@@ -1203,8 +1215,17 @@ and native public origin are derived after committed identity. The old
 
 The new hook runs only after the same worker-owned progress has committed the v2
 identity stage and rechecks the actual original job/grant under its job lock.
-It registers Home under the gateway configuration's actual owner UID, then reads
-the existing owner's paired-human endpoint. An already-loaded pair requires no
+It registers Home under the gateway configuration's actual owner UID and adds
+its same-origin `interaction` route to the existing private application receiving
+map selected by the running gateway's `--miniapp-receivers` argument. The same
+writer preserves all other homes/capabilities and refuses a conflicting existing
+route before issuing keys. Reconciliation reuses the committed identity, owner
+keys and route; it does not repeat onboarding or create a second registry. The
+standalone `register-companion` CLI accepts `--receivers` for this composition.
+
+The hook then reads the existing owner's paired-human endpoint. Completion
+requires both the exact human/being pair and its loaded, configured `interaction`
+URL; pairing alone is insufficient. An already-loaded pair and route require no
 reload. A newly registered but unloaded Home may reload only the existing
 `daimon-home-access.service`, after verifying its actual process explicitly uses
 the selected configuration. Reload intent is durable before dispatch; an

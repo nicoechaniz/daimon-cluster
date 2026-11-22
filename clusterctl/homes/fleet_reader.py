@@ -18,6 +18,40 @@ import time
 LIMIT = 131072
 
 
+def collect_usage(config, *, execute=None):
+    # Public probe/transport bytes are pinned by the same protected owner config.
+    # The transport is the existing Telecodex read-only Native implementation.
+    execute = execute or (lambda argv, source: run(argv, source, timeout=12))
+    sources = []
+    for field in ('native_transport', 'usage_probe'):
+        path = Path(config[field]['path'])
+        if path.stat().st_size > 1048576:
+            raise ValueError('usage_source_limit')
+        source = path.read_bytes()
+        if hashlib.sha256(source).hexdigest() != config[field]['sha256']:
+            raise ValueError('changed_usage_source')
+        sources.append(source.decode())
+    transport = sources[0].split('\nclass Rollout:', 1)[0]
+    if 'class Native:' not in transport or len(transport) > 16384:
+        raise ValueError('invalid_usage_transport')
+    targets = config['usage_targets']
+    if not 1 <= len(targets) <= 16:
+        raise ValueError('usage_target_limit')
+    def read(target):
+        row = dict(being=target['being'], name=target['name'], state='unavailable')
+        try:
+            program = transport+'\n'+sources[1]+'\nprint(json.dumps(probe_usage('+repr(target['probe'])+', native_factory=Native)))\n'
+            row.update(state='available', reading=execute(target['command'], program))
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            pass
+        return row
+    # Imported only in the owner collector, never on remote guests.
+    import runpy
+    aggregate = runpy.run_path(str(Path(__file__).with_name('usage.py')))['aggregate']
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        return aggregate(list(pool.map(read, targets)))
+
+
 def run(argv, source, timeout=16):
     child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, start_new_session=True)
@@ -128,7 +162,22 @@ def main():
         if current.exists() and 0 <= time.time()-current.stat().st_mtime < 5:
             raw=current.read_bytes()
         else:
-            result=collect(config);raw=json.dumps(result).encode()
+            usage = None
+            if config.get('usage_targets'):
+                usage_path = state/'usage.json'
+                if usage_path.exists() and 0 <= time.time()-usage_path.stat().st_mtime < 60:
+                    usage = json.loads(usage_path.read_bytes())
+                else:
+                    try:
+                        usage = collect_usage(config)
+                    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                        usage = {'schema':'cluster-usage/v1','state':'unavailable','daimons':[],'accounts':[]}
+                    encoded = json.dumps(usage).encode()
+                    if len(encoded)>65536:raise ValueError('usage_report_limit')
+                    temporary=state/'usage.next';temporary.write_bytes(encoded);temporary.chmod(0o600);temporary.replace(usage_path)
+            result=collect(config)
+            if usage is not None:result['usage']=usage
+            raw=json.dumps(result).encode()
             if len(raw)>LIMIT:raise ValueError('report_limit')
             temporary=state/'current.next';temporary.write_bytes(raw);temporary.chmod(0o600);temporary.replace(current)
         if len(raw)>LIMIT:raise ValueError('report_limit')

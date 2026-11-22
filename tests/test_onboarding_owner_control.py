@@ -1,5 +1,6 @@
 """Control recovery and deadlines through the existing native request contract."""
 import copy
+import json
 import os
 import socket
 import time
@@ -111,6 +112,54 @@ def test_lost_ack_reuses_original_native_request_without_reauthoring(tmp_path):
         assert calls.count('prepare') == 1
         sends = [v[1] for v in calls if isinstance(v,tuple)]
         assert sends[0] == sends[1]
+    finally:
+        listener.close()
+
+
+@pytest.mark.parametrize('repeated', [False, True])
+def test_roster_contention_reconciles_once_without_new_control(tmp_path, repeated):
+    owner, client, expected, command, path, _state, calls, listener = fixture(tmp_path)
+    original = client.send
+    sent = []
+
+    def send(request):
+        sent.append(copy.deepcopy(request))
+        if len(sent) == 1 or repeated:
+            return dict(ok=False, error=dict(code='reader_roster_unavailable', retryable=True))
+        return original(request)
+
+    client.send = send
+    try:
+        if repeated:
+            with pytest.raises(OnboardingError, match='receiving_control_not_accepted'):
+                control.execute(owner, command, path, expected=expected, deadline_ns=owner.deadline_ns)
+        else:
+            result = control.execute(owner, command, path, expected=expected, deadline_ns=owner.deadline_ns)
+            assert result['gate']['phase'] == 'select'
+        assert len(sent) == 2 and sent[0] == sent[1]
+        assert calls.count('prepare') == 1
+        assert json.loads(path.read_text())['request'] == sent[0]
+    finally:
+        listener.close()
+
+
+@pytest.mark.parametrize('error', [
+    dict(code='reader_roster_unavailable', retryable=False),
+    dict(code='reader_roster_conflict', retryable=True),
+])
+def test_other_reader_refusals_are_not_retried(tmp_path, error):
+    owner, client, expected, command, path, _state, _calls, listener = fixture(tmp_path)
+    sent = []
+
+    def send(request):
+        sent.append(request)
+        return dict(ok=False, error=error)
+
+    client.send = send
+    try:
+        with pytest.raises(OnboardingError, match='receiving_control_not_accepted'):
+            control.execute(owner, command, path, expected=expected, deadline_ns=owner.deadline_ns)
+        assert len(sent) == 1
     finally:
         listener.close()
 
@@ -264,6 +313,8 @@ def test_retained_status_keeps_exact_request_but_reads_current_result(tmp_path, 
         assert control.RetainedStatusOwner._status_response(owner,client)['ok'] is False
         assert files[0].read_bytes()==saved and calls.count('status-prepare')==1
         assert len(sent)==3 and all(request==sent[0] for request in sent)
+        assert sent[0]['params']=={'view':'receiving'}
+        assert set(capability.methods)=={'runtime.status'}
     finally:
         observer.__exit__()
         listener.close()
@@ -793,3 +844,53 @@ def test_known_accepted_envelope_recovers_at_full_staging_capacity(auth_native_c
     assert f.execute()['request_sha256']==request_hash(original)
     assert {p.name:p.stat().st_size for p in f.path.parent.iterdir()}==before
     assert f.calls.count('prepare')==2 and len(f.effects)==1
+
+@pytest.mark.parametrize('slot',[None,'a'*64,'../foreign','',17])
+def test_reader_rpc_generation_slot_is_only_a_bounded_local_request_path(tmp_path, monkeypatch, slot):
+    deadline=time.monotonic_ns()+1_000_000_000
+    command=dict(operation_id=str(uuid.uuid4()),phase='revoke')
+    value=dict(action='control',command=command,expected={'unchanged':'binding'})
+    if slot is not None:
+        value['slot']=slot
+    calls=[]
+    def execute(owner, actual, path, **options):
+        calls.append(path)
+        assert actual is command and options['expected']==value['expected']
+        assert options['deadline_ns']==deadline
+        return {'accepted':True}
+    monkeypatch.setattr(control,'execute',execute)
+    owner=SimpleNamespace(root=tmp_path)
+    if slot is None or slot=='a'*64:
+        assert control.reader_rpc(owner,value,deadline_ns=deadline)=={'accepted':True}
+        suffix='' if slot is None else '-'+slot
+        assert calls==[tmp_path/'receiving-control'/(command['operation_id']+'-revoke'+suffix+'.json')]
+    else:
+        with pytest.raises(OnboardingError,match='invalid_receiving_control_request'):
+            control.reader_rpc(owner,value,deadline_ns=deadline)
+        assert calls==[]
+
+
+@pytest.mark.parametrize('packet,seconds,accepted', [
+    ({'action': 'native-current', 'plan_digest': 'a'*64}, 175, True),
+    ({'action': 'status'}, 175, False),
+    ({'action': 'control'}, 175, False),
+    ({'action': 'native-current', 'plan_digest': 'a'*64, 'extra': True}, 175, False),
+    ({'action': 'native-current', 'plan_digest': 'a'*64}, 181, False),
+])
+def test_only_current_native_read_admits_parent_and_child_startup_budget(monkeypatch, packet, seconds, accepted):
+    import io
+    import json
+    import sys
+    calls = []
+    class Owner:
+        def __init__(self, *args, **kwargs):
+            calls.append('owner')
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(control, 'OwnerGroupClient', Owner)
+    monkeypatch.setattr(control, 'reader_rpc', lambda owner, value, **kwargs: {'observed': True})
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(packet).encode())))
+    monkeypatch.setattr(sys, 'argv', ['owner', '--root', '/held', '--socket', '/held/socket',
+        '--reader-rpc', '--max-seconds', str(seconds)])
+    assert control.main() == (0 if accepted else 1)
+    assert calls == (['owner'] if accepted else [])

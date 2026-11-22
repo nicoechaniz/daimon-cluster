@@ -1,0 +1,692 @@
+"""One finite native-update command reuses existing jobs, routes and effects."""
+import copy
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from clusterctl import being_seed, onboarding_host, onboarding_managed as managed
+from clusterctl.onboarding import OnboardingError
+
+
+def spec():
+    return dict(schema='cluster-native-code-maintenance/v1', host_config='/held/host.json',
+        vm_qualification=None, candidate=dict(code='/held/code', code_digest='a'*64),
+        targets=['first', 'second', 'third'], group='published',
+        operation_id='31bca744-1da3-4379-a6df-211f38d5c347', max_seconds=480)
+
+
+@pytest.mark.parametrize('change', [dict(max_seconds=481), dict(targets=['first', 'first']),
+    dict(candidate=dict(code='../foreign', code_digest='a'*64)), dict(host_config=None),
+    dict(operation_id='new-each-retry'), dict(group='enable-everything')])
+def test_refuse_invalid_or_unbounded_spec_before_any_backend(change):
+    with pytest.raises(OnboardingError, match='native_code_maintenance_spec_required'):
+        managed.validate_code_update({**spec(), **change})
+
+
+def test_reconciliation_requires_explicit_published_current_owner_observation():
+    selected = {**spec(), 'reconcile_existing':True, 'owner_observation':'/held/current-readers.json'}
+    assert managed.validate_code_update(selected) == selected
+    for change in [dict(reconcile_existing=False), dict(group='closed'), dict(owner_observation=None)]:
+        with pytest.raises(OnboardingError, match='native_code_maintenance_spec_required'):
+            managed.validate_code_update({**selected,**change})
+
+
+def test_same_command_reports_reconciliation_separately_from_installation(monkeypatch):
+    selected = {**spec(), 'targets':['first'], 'reconcile_existing':True,
+        'owner_observation':'/held/current-readers.json'}
+    backend = SimpleNamespace(runtime_available=lambda *args,**kwargs:True)
+    monkeypatch.setattr(managed, 'maintenance_backend', lambda *args:
+        (backend, {'first':dict(name='first')}))
+    observer = object()
+    monkeypatch.setattr(managed, 'code_update_observers', lambda *args:{'first':observer})
+    def reconcile(plan, candidate, **options):
+        assert plan == dict(name='first')
+        assert options['operation_id'] == selected['operation_id']
+        assert options['reconcile_existing'] is True
+        assert options['current_observer'] is observer
+        return dict(schema='cluster-native-code-reconciled/v1',candidate_digest=candidate[1],
+            original_candidate_digest='b'*64)
+    monkeypatch.setattr(managed, 'ManagedRuntime', lambda _:SimpleNamespace(update_native_code=reconcile))
+    result = managed.run_code_update(selected)
+    assert result['complete'] is True
+    assert result['targets'][0]['status'] == 'reconciled'
+    assert result['targets'][0]['result']['original_candidate_digest'] == 'b'*64
+
+
+@pytest.mark.parametrize('batch_seconds',[90,480])
+def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monkeypatch, batch_seconds):
+    selected = {**spec(), "max_seconds": batch_seconds}
+    clock = [1_000_000_000]
+    monkeypatch.setattr(managed.time, 'monotonic_ns', lambda: clock[0])
+    config = SimpleNamespace(jobs=tmp_path)
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda _: config)
+    class Jobs:
+        def __init__(self, _):
+            pass
+        def _load(self, name):
+            return dict(plan=dict(name=name))
+    monkeypatch.setattr(managed, 'JobStore', Jobs)
+    prepared, budgets, attempts, effects = [], [], [], {}
+    class Backend:
+        def __init__(self, selected, run=None):
+            assert selected is config and run is None
+        def runtime_available(self, plan, candidate, *, prepare, deadline_ns):
+            assert prepare and candidate[1] == 'a'*64
+            assert 0 < deadline_ns-clock[0] <= min(480,batch_seconds)*1_000_000_000
+            prepared.append(plan['name'])
+            clock[0] += 20_000_000_000
+            return True
+    fail = [True]
+    class Owner:
+        def __init__(self, _):
+            pass
+        def update_native_code(self, plan, candidate, **options):
+            assert options['published_group'] and not options['receive_only_group']
+            budgets.append(options['timeout_seconds'])
+            key = (options['operation_id'], plan['name'])
+            attempts.append(key)
+            if plan['name'] == 'second' and fail:
+                fail.pop()
+                raise being_seed.SeedError('seed_operation_in_progress', 409)
+            effects.setdefault(key, dict(candidate_digest=candidate[1]))
+            return copy.deepcopy(effects[key])
+    monkeypatch.setattr(onboarding_host, 'HostBackend', Backend)
+    monkeypatch.setattr(managed, 'ManagedRuntime', Owner)
+    result = managed.run_code_update(selected)
+    assert not result['complete'] and result['pending'] == ['third']
+    assert [row['status'] for row in result['targets']] == ['updated', 'incomplete']
+    assert result['targets'][1]['failure']['code'] == 'seed_operation_in_progress'
+    assert prepared == ['first', 'second']
+    assert all(0 < seconds <= min(460,batch_seconds-20) for seconds in budgets)
+    result = managed.run_code_update(selected)
+    assert result['complete'] and not result['pending']
+    assert len(effects) == 3 and {key[0] for key in attempts} == {spec()['operation_id']}
+    assert result['receiving_readiness'] == 'unobserved'
+
+
+def test_command_requires_root_without_disclosing_spec_path(capsys, monkeypatch):
+    monkeypatch.setattr('os.geteuid', lambda: 1000)
+    assert managed.main(['--spec', '/private/never-read.json']) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['failure']['code'] == 'native_code_maintenance_root_required'
+    assert 'private' not in json.dumps(result)
+
+
+def test_recovery_helper_prepares_without_changing_native_candidate_or_operation(monkeypatch):
+    from pathlib import Path
+    selected = {**spec(), 'targets':['first'],
+        'recovery_implementation':dict(code='/held/recovery',code_digest='b'*64)}
+    prepared = []
+    backend = SimpleNamespace(runtime_available=lambda plan,code,**kw:
+        prepared.append(code) is None)
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *args:
+        (backend,{'first':dict(name='first')}))
+    def update(plan,candidate,**kw):
+        assert candidate == (Path('/held/code'),'a'*64)
+        assert kw['operation_id'] == spec()['operation_id']
+        assert kw['recovery_implementation'] == (Path('/held/recovery'),'b'*64)
+        return dict(candidate_digest=candidate[1])
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:SimpleNamespace(update_native_code=update))
+    assert managed.run_code_update(selected)['complete']
+    assert prepared == [(Path('/held/code'),'a'*64),(Path('/held/recovery'),'b'*64)]
+    for bad in ({},dict(code='relative',code_digest='b'*64),dict(code='/held/code',code_digest='bad')):
+        with pytest.raises(OnboardingError,match='spec_required'):
+            managed.validate_code_update({**selected,'recovery_implementation':bad})
+
+
+def test_remote_cohort_uses_existing_placement_pins_without_initial_publication(tmp_path, monkeypatch):
+    from clusterctl import vm_body
+    selected = spec()
+    selected.update(targets=['first'], vm_qualification=str(tmp_path))
+    being_seed._write(tmp_path/'receiving.json', {'results': {'first': {'placement_sha256': 'b'*64}}})
+    config = SimpleNamespace(jobs=tmp_path/'jobs')
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda _: config)
+    monkeypatch.setattr(managed, 'JobStore', lambda _: SimpleNamespace(
+        _load=lambda name: dict(plan=dict(name=name))))
+    seen = {}
+    class Runner:
+        def __init__(self, placements, plans, *, publish):
+            seen.update(placements=placements, plans=plans)
+            with pytest.raises(OnboardingError, match='existing_body_required'):
+                publish('forbidden-new-input')
+    monkeypatch.setattr(vm_body, 'RemoteIncusRunner', Runner)
+    class Backend:
+        def __init__(self, _, *, run):
+            assert isinstance(run, Runner)
+        def runtime_available(self, *_, **__):
+            return True
+    monkeypatch.setattr(onboarding_host, 'HostBackend', Backend)
+    monkeypatch.setattr(managed, 'ManagedRuntime', lambda _: SimpleNamespace(
+        update_native_code=lambda *args, **kwargs: dict(candidate_digest='a'*64)))
+    assert managed.run_code_update(selected)['complete']
+    assert seen['placements'] == {'first': (tmp_path/'first-placement.json', 'b'*64)}
+    assert seen['plans'] == {'first': {'name': 'first'}}
+
+
+def test_reader_route_failure_precedes_any_update(tmp_path, monkeypatch):
+    selected = spec()
+    selected['reader_completion'] = str(tmp_path/'readers.json')
+    monkeypatch.setattr(managed, 'load_code_update_readers', lambda _: dict(checkpoint=str(tmp_path/'reader-progress.json'), owners={'current':{}}))
+    class Client:
+        def __init__(self, _):
+            pass
+        def _call(self, value):
+            assert value == {'action':'status'}
+            raise OnboardingError('receiving_reader_owner_unavailable')
+    monkeypatch.setattr(managed, 'ReaderCommandClient', Client)
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda _:SimpleNamespace(jobs=tmp_path))
+    monkeypatch.setattr(managed,'JobStore',lambda _:SimpleNamespace(_load=lambda name:dict(plan=dict(name=name))))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda *_,**__:SimpleNamespace())
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:pytest.fail('update began before route preflight'))
+    result=managed.run_code_update(selected)
+    assert not result['complete'] and result['targets']==[] and result['pending']==selected['targets']
+    assert result['reader_completion']['name']=='current'
+    assert result['reader_completion']['phase']=='owner-preflight'
+    assert result['reader_completion']['failure']['code']=='receiving_reader_owner_unavailable'
+
+
+def test_reader_command_is_bounded_json_rpc_with_exact_control(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    client = managed.ReaderCommandClient(dict(root=str(tmp_path), command=['/held/owner']))
+    client.deadline_ns = time.monotonic_ns()+30_000_000_000
+    seen = []
+    expected = dict(selection={'current':'selected'},process={'pid':42})
+    def run(argv, **options):
+        assert argv[0] == '/held/owner' and argv[1:3] == ['--reader-rpc','--max-seconds']
+        assert 0 < float(argv[3]) <= options['timeout'] <= 30
+        value=json.loads(options['input'])
+        seen.append(value)
+        return SimpleNamespace(returncode=0,stdout=json.dumps(dict(expected=expected)))
+    monkeypatch.setattr(receiving,'_run_owner',run)
+    assert client.current_reader(expected_selection=expected['selection'])['expected'] == expected
+    command=dict(operation_id=spec()['operation_id'],phase='select',expected_head='a'*64,readers=[])
+    client.prepare_apply_control(command,tmp_path/'receiving-control'/(spec()['operation_id']+'-select.json'))
+    assert seen[-1] == dict(action='control',command=command,expected=expected)
+    with pytest.raises(OnboardingError,match='binding_conflict'):
+        client.prepare_apply_control(command,tmp_path/'foreign.json')
+
+
+def test_reader_failure_keeps_update_complete_and_resumes_same_native_effects(tmp_path, monkeypatch):
+    selected=spec()
+    selected['reader_completion']=str(tmp_path/'readers.json')
+    routes=dict(checkpoint=str(tmp_path/'reader-progress.json'), owners={'current':{}})
+    monkeypatch.setattr(managed,'load_code_update_readers',lambda _:routes)
+    monkeypatch.setattr(managed,'ReaderCommandClient',lambda _:SimpleNamespace(_call=lambda _:dict(ready=True)))
+    config=SimpleNamespace(jobs=tmp_path/'jobs')
+    monkeypatch.setattr(onboarding_host.HostConfig,'load',lambda _:config)
+    monkeypatch.setattr(managed,'JobStore',lambda _:SimpleNamespace(_load=lambda name:dict(plan=dict(name=name))))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda *_,**__:SimpleNamespace(runtime_available=lambda *_,**__:True))
+    effects={}
+    def update(plan,*_,**options):
+        return effects.setdefault((options['operation_id'],plan['name']),dict(loaded=True))
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:SimpleNamespace(update_native_code=update))
+    first=[True]
+    def finish(value,**options):
+        assert value is routes and options['operation_id'] == selected['operation_id']
+        if first:
+            first.pop()
+            raise OnboardingError('receiving_control_completion_uncertain')
+        return dict(receiving_readiness='qualified-local-projection',communication_acceptance='unobserved')
+    monkeypatch.setattr(managed,'complete_code_update_readers',finish)
+    result=managed.run_code_update(selected)
+    assert not result['complete'] and result['pending'] == [] and len(effects)==3
+    assert all(row['status']=='updated' for row in result['targets'])
+    result=managed.run_code_update(selected)
+    assert result['complete'] and result['receiving_readiness']=='qualified-local-projection'
+    assert len(effects)==3
+
+
+def test_job_reader_reuses_owning_placement_executor(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    monkeypatch.setattr(receiving,'_run_owner',lambda *_,**__:pytest.fail('new transport bypassed placement'))
+    plan=dict(name='current')
+    def execute(actual,argv,**options):
+        assert actual is plan and argv[0]=='/body/owner'
+        assert options['uid']==options['gid']==1000
+        assert json.loads(options['input_data'])=={'action':'status'}
+        assert options['deadline_ns'] > time.monotonic_ns()
+        return json.dumps({'current':'owner'})
+    backend=SimpleNamespace(execute_body=execute)
+    clients=managed.code_update_reader_clients(dict(owners={'current':dict(root=str(tmp_path),
+        job='current',command=['/body/owner'])}),backend=backend,plans={'current':plan})
+    clients['current'].deadline_ns=time.monotonic_ns()+1_000_000_000
+    assert clients['current']._call(dict(action='status'))=={'current':'owner'}
+
+
+def test_owner_import_failure_is_public_code_without_arbitrary_stderr(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['/held/owner']))
+    client.deadline_ns=time.monotonic_ns()+1_000_000_000
+    monkeypatch.setattr(receiving,'_run_owner',lambda *_,**__:SimpleNamespace(returncode=1,
+        stdout='',stderr="private diagnostic must stay private\nModuleNotFoundError: No module named 'clusterctl'\n"))
+    with pytest.raises(OnboardingError) as caught:
+        client._call(dict(action='status'))
+    assert str(caught.value)=='receiving_reader_owner_import_unavailable'
+
+
+@pytest.mark.parametrize('tamper',[None,'process','code','bundle'])
+@pytest.mark.parametrize('explicit_route',[False,True])
+def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monkeypatch, tamper, explicit_route):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    observed=dict(process=dict(pid=42),server=dict(embodiment_id='body:current'),runtime_status=dict(
+        loaded_runtime=dict(qualified_startup=dict(code_digest='a'*64,matrix_wheel_sha256='b'*64),
+            runtime_bundle_sha256='c'*64),loaded_application=dict(application_sha256='d'*64,
+                publication_sha256='e'*64,visibility=dict(installation_sha256='f'*64))))
+    receipt=dict(operation_id=spec()['operation_id'],candidate_digest='a'*64,
+        process=copy.deepcopy(observed['process']),origin=observed['server'],runtime_sha256='c'*64)
+    if tamper=='process':
+        observed['process']['pid']=43
+    elif tamper=='code':
+        observed['runtime_status']['loaded_runtime']['qualified_startup']['code_digest']='9'*64
+    elif tamper=='bundle':
+        observed['runtime_status']['loaded_runtime']['runtime_bundle_sha256']='9'*64
+    client=SimpleNamespace(_call=lambda _:copy.deepcopy(observed))
+    monkeypatch.setattr(managed,'code_update_reader_clients',lambda *_,**__:dict(current=client))
+    def finish(owners,**options):
+        assert owners['current'] is client
+        assert options['selections']['current']['receiving_code']=='a'*64
+        assert options['selections']['current']['runtime_bundle_sha256']=='c'*64
+        return dict(ready=True)
+    monkeypatch.setattr(receiving,'refresh_current_readers',finish)
+    value=dict(checkpoint=str(tmp_path/'progress.json'),owners=dict(current=dict(
+        job='current',selection=None,require_admitted=True)))
+    if explicit_route:
+        value['owners']['current'].pop('job')
+        value['owners']['current']['selection']={'receiving_code':'9'*64}
+    options=dict(operation_id=receipt['operation_id'],release_digest='a'*64,
+        deadline_ns=time.monotonic_ns()+1_000_000_000,updates={'current':receipt})
+    if tamper:
+        with pytest.raises(OnboardingError,match='selection_changed'):
+            managed.complete_code_update_readers(value,**options)
+    else:
+        assert managed.complete_code_update_readers(value,**options)==dict(ready=True)
+
+
+def test_pending_reader_predecessor_refuses_before_software_work(tmp_path, monkeypatch):
+    selected = spec()
+    selected['reader_completion'] = str(tmp_path/'routes.json')
+    checkpoint = tmp_path/'reader-progress.json'
+    being_seed._write(checkpoint, dict(schema='cluster-current-reader-completion/v1',
+        binding=dict(operation_id='previous-operation'), commands={}))
+    monkeypatch.setattr(managed, 'load_code_update_readers', lambda _:dict(
+        checkpoint=str(checkpoint), owners={'current':{}}))
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load',
+        lambda _:pytest.fail('software work began with an unresolved predecessor'))
+    with pytest.raises(OnboardingError, match='receiving_reader_checkpoint_unresolved'):
+        managed.run_code_update(selected)
+
+
+def test_pending_reader_checkpoint_keeps_same_operation_resumable(tmp_path):
+    from clusterctl.onboarding_receiving_update import preflight_reader_checkpoint
+    checkpoint = tmp_path/'reader-progress.json'
+    being_seed._write(checkpoint, dict(schema='cluster-current-reader-completion/v1',
+        binding=dict(operation_id=spec()['operation_id']), commands={}))
+    preflight_reader_checkpoint(checkpoint, spec()['operation_id'])
+
+
+@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "retained", "owned-stopped"])
+def test_native_profile_command_composes_existing_readers_and_keeps_the_same_deadline(
+    tmp_path, monkeypatch, mode
+):
+    import os
+    from pathlib import Path
+    from clusterctl import rebirth_native, onboarding_receiving_update as receiving
+    from clusterctl.onboarding_owner_control import _selection
+    from clusterctl.operation_journal import OperationJournal
+
+    config = tmp_path / "source.json"
+    being_seed._write(config, {"runtime_root": "/owner/native"})
+    selected = dict(
+        schema="cluster-native-profile-maintenance/v1",
+        operation_id=spec()["operation_id"],
+        profile=str(tmp_path / "profile.json"),
+        unit="/etc/systemd/system/compaii-matrix-itaca.service",
+        journal=str(tmp_path / "native-journal"),
+        candidate={"code_digest": "b" * 64},
+        max_seconds=60,
+        reader_completion=str(tmp_path / "routes.json"),
+    )
+    core = {k: v for k, v in selected.items() if k != "reader_completion"}
+
+    def observation(code):
+        return dict(
+            process={"pid": 42},
+            server={"embodiment_id": "body"},
+            runtime_status=dict(
+                loaded_runtime=dict(
+                    qualified_startup=dict(
+                        code_digest=code, matrix_wheel_sha256="d" * 64
+                    ),
+                    runtime_bundle_sha256="e" * 64,
+                ),
+                loaded_application=dict(
+                    application_sha256="f" * 64,
+                    publication_sha256="1" * 64,
+                    visibility={"installation_sha256": "2" * 64},
+                ),
+            ),
+        )
+
+    before, after = observation("a" * 64), observation("b" * 64)
+    peer = observation("c" * 64)
+    routes = dict(
+        checkpoint=str(tmp_path / "readers.json"),
+        owners={
+            name: dict(selection=_selection(value), require_admitted=True)
+            for name, value in [("root", before), ("peer", peer)]
+        },
+    )
+    monkeypatch.setattr(managed, "load_code_update_readers", lambda _: routes)
+    monkeypatch.setattr(
+        rebirth_native,
+        "ProfileOwner",
+        lambda _: SimpleNamespace(
+            uid=os.geteuid(), profile=lambda: {"config": str(config)}
+        ),
+    )
+    calls = []
+
+    class Client:
+        def __init__(self, name):
+            self.name = name
+            self.root = Path("/owner/native" if name == "root" else "/peer/native")
+
+        def _call(self, request):
+            calls.append(self.name)
+            if self.name == "root" and mode == "owned-stopped":
+                pytest.fail("the operation-owned stopped reader must not block recovery")
+            if self.name == "peer" and mode == "failed-reader":
+                raise OnboardingError("receiving_reader_owner_unavailable")
+            return (
+                (after if mode == "retained" else before)
+                if self.name == "root"
+                else peer
+            )
+
+    clients = {name: Client(name) for name in ("root", "peer")}
+    monkeypatch.setattr(managed, "code_update_reader_clients", lambda *_, **__: clients)
+    if mode in {"retained", "owned-stopped"}:
+        journal = OperationJournal(Path(core["journal"]))
+        row = journal.plan(
+            operation="receiving-update",
+            target="profile:fixture",
+            operation_id=core["operation_id"],
+            idempotency_key="fixture",
+            intent={"native_profile_maintenance": core},
+            expected_precondition={"receiving": before},
+            intended_transition={},
+            audit_identity={},
+        )
+        if mode == "retained":
+            journal.advance(row["operation_id"], "completed", result={"loaded": after})
+        else:
+            journal.advance(row["operation_id"], "runtime-dispatching", runtime_observation={"stop_intent": {}})
+
+    def run(value, **options):
+        assert (
+            value == core
+            and 0
+            < options["deadline_ns"] - managed.time.monotonic_ns()
+            <= 60_000_000_000
+        )
+        assert calls == (["peer"] if mode == "owned-stopped" else ["root", "peer"])
+        calls.append("software")
+        return (
+            dict(qualified=True)
+            if options["check_only"]
+            else dict(complete=True, loaded=after)
+        )
+
+    monkeypatch.setattr(rebirth_native, "run_profile_maintenance", run)
+
+    def finish(owners, **options):
+        assert owners == clients and calls[-1] == "software"
+        assert options["selections"] == {
+            "root": _selection(after),
+            "peer": _selection(peer),
+        }
+        assert (
+            options["deadline_ns"]
+            == clients["root"].deadline_ns
+            == clients["peer"].deadline_ns
+        )
+        calls.append("readers")
+        return dict(receiving_readiness="qualified-local-projection")
+
+    monkeypatch.setattr(receiving, "refresh_current_readers", finish)
+    if mode == "failed-reader":
+        with pytest.raises(OnboardingError, match="reader_owner_unavailable"):
+            managed.run_native_profile_update(selected)
+        assert "software" not in calls
+    else:
+        result = managed.run_native_profile_update(selected, check_only=mode == "check")
+        if mode == "check":
+            assert result["reader_routes_observed"] == 2 and calls[-1] == "software"
+        else:
+            assert (
+                result["receiving_readiness"] == "qualified-local-projection"
+                and calls[-1] == "readers"
+            )
+
+
+def test_native_profile_refusal_is_typed_and_never_exposes_unknown_detail():
+    from clusterctl.onboarding import refusal_diagnostic
+    from clusterctl import rebirth_native, rebirth_host
+    assert 'rebirth_host_native_profile_start_unconfirmed' in rebirth_native.PROFILE_ERRORS
+    assert refusal_diagnostic(rebirth_host.RebirthHostError(
+        'rebirth_host_native_profile_start_unconfirmed'),stage='native')['code']=='rebirth_host_native_profile_start_unconfirmed'
+    assert refusal_diagnostic(rebirth_host.RebirthHostError(
+        '/private/unrelated diagnostic'),stage='native')['code']=='unclassified_refusal'
+
+
+def test_reader_registry_is_independent_of_updated_jobs(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    from clusterctl.onboarding_owner_control import _selection
+    observed = dict(process=dict(pid=42),server=dict(embodiment_id='body'),runtime_status=dict(
+        loaded_runtime=dict(qualified_startup=dict(code_digest='a'*64,matrix_wheel_sha256='b'*64),
+            runtime_bundle_sha256='c'*64),loaded_application=dict(application_sha256='d'*64,
+            publication_sha256='e'*64,visibility={'installation_sha256':'f'*64})))
+    routes=dict(schema='cluster-maintenance-reader-routes/v1',checkpoint=str(tmp_path/'checkpoint'),
+        host_config='/existing/reader-host.json',vm_qualification='/existing/reader-placements',
+        owners=dict(child=dict(root='/child/runtime',job='child',command=['/existing/owner'],
+            selection=_selection(observed),require_admitted=True)))
+    path=tmp_path/'routes.json';being_seed._write(path,routes)
+    assert managed.load_code_update_readers(path)==routes
+    plan={'name':'child'}
+    def execute(actual, argv, **options):
+        assert actual is plan and argv[0]=='/existing/owner'
+        assert options['uid']==options['gid']==1000
+        return json.dumps(observed)
+    reader_backend=SimpleNamespace(execute_body=execute)
+    def locate(host, qualification, names):
+        assert host==routes['host_config'] and qualification==routes['vm_qualification']
+        assert names=={'child'}
+        return reader_backend,{'child':plan}
+    monkeypatch.setattr(managed,'maintenance_backend',locate)
+    monkeypatch.setattr(receiving,'_run_owner',lambda *_,**__:pytest.fail('reader bypassed its owning placement'))
+    clients=managed.code_update_reader_clients(routes,backend=object(),plans={'updated':{}})
+    clients['child'].deadline_ns=managed.time.monotonic_ns()+1_000_000_000
+    assert clients['child']._call({'action':'status'})==observed
+    for changes in ({'host_config':'../foreign'},{'host_config':None},{'vm_qualification':'relative'}):
+        being_seed._write(path,{**routes,**changes})
+        with pytest.raises(OnboardingError,match='current_reader_binding_required'):
+            managed.load_code_update_readers(path)
+
+
+@pytest.mark.parametrize('same_operation',[False,True])
+def test_exact_owned_guest_stop_can_resume_before_its_reader(tmp_path, monkeypatch, same_operation):
+    selected=spec();selected['targets']=['eko'];selected['reader_completion']=str(tmp_path/'routes')
+    admission=tmp_path/'admission';state=tmp_path/'state';being_seed._write(admission,{'state':str(state)})
+    plan={'name':'eko'};directory=state/'eko';directory.mkdir(parents=True)
+    being_seed._write(directory/'native-code-update.json',dict(pins=dict(
+        operation_id=selected['operation_id'] if same_operation else 'other',
+        candidate_digest=selected['candidate']['code_digest'],plan_digest=managed.digest(plan)),
+        effects={'quiesce':{}},dispatching='migrate'))
+    backend=SimpleNamespace(config=SimpleNamespace(admission=admission),runtime_available=lambda *_,**__:True)
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *_,**__:(backend,{'eko':plan}))
+    routes=dict(checkpoint=str(tmp_path/'readers'),owners={'eko':{}})
+    monkeypatch.setattr(managed,'load_code_update_readers',lambda _:routes)
+    def unavailable(_):
+        raise OnboardingError('receiving_reader_owner_unavailable')
+    monkeypatch.setattr(managed,'code_update_reader_clients',lambda *_,**__:{'eko':SimpleNamespace(_call=unavailable)})
+    calls=[]
+    def update(*_,**__):
+        calls.append('native-resume');return {'complete':True}
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:SimpleNamespace(update_native_code=update))
+    monkeypatch.setattr(managed,'complete_code_update_readers',lambda *_,**__:dict(receiving_readiness='qualified-local-projection'))
+    result=managed.run_code_update(selected)
+    assert result['complete'] is same_operation
+    assert calls==(['native-resume'] if same_operation else [])
+
+
+def test_reader_client_keeps_native_operation_and_emits_generation_slot(tmp_path):
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['unused']))
+    client.expected={'unchanged':'binding'}
+    client._call=lambda value:value
+    command=dict(operation_id=spec()['operation_id'],phase='select')
+    slot='a'*64
+    path=tmp_path/'receiving-control'/(command['operation_id']+'-select-'+slot+'.json')
+    value=client.prepare_apply_control(command,path)
+    assert value==dict(action='control',command=command,expected=client.expected,slot=slot)
+    with pytest.raises(OnboardingError,match='control_binding_conflict'):
+        client.prepare_apply_control(command,tmp_path/'elsewhere'/path.name)
+
+
+
+@pytest.mark.parametrize('reported,expected',[
+    ('receiving_control_binding_conflict','receiving_control_binding_conflict'),
+    ('private arbitrary detail','receiving_reader_owner_unavailable'),
+])
+def test_owner_client_retains_only_closed_refusal_codes(tmp_path,monkeypatch,reported,expected):
+    import json,time
+    from clusterctl import onboarding_receiving_update as receiving
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['unused']))
+    client.deadline_ns=time.monotonic_ns()+60_000_000_000
+    monkeypatch.setattr(receiving,'_run_owner',lambda *a,**k:SimpleNamespace(
+        returncode=1,stdout='',stderr=json.dumps(dict(error=reported))))
+    with pytest.raises(OnboardingError,match=expected):
+        client._call(dict(action='status'))
+
+
+def test_local_owner_observation_resolves_only_updated_targets_without_peer_preflight(tmp_path, monkeypatch):
+    selected={**spec(), 'targets':['first'], 'owner_observation':str(tmp_path/'owners.json')}
+    routes=dict(owners={'own':{'job':'first'},'unavailable-peer':{'job':'other'}},
+                host_config='/existing/reader-registry.json',vm_qualification=None)
+    monkeypatch.setattr(managed,'load_code_update_readers',lambda _: routes)
+    backend=SimpleNamespace(runtime_available=lambda *a,**k:True)
+    plans={'first':{'name':'first'}}
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *a:(backend,plans))
+    observer=object()
+    def clients(value,**options):
+        assert set(value['owners'])=={'own'}
+        return {'own':observer}
+    monkeypatch.setattr(managed,'code_update_reader_clients',clients)
+    class Owner:
+        def __init__(self, _):pass
+        def update_native_code(self,plan,candidate,**options):
+            assert options['current_observer'] is observer
+            return {'local_reader':{'phase':'select','recovery':'recovered'}}
+    monkeypatch.setattr(managed,'ManagedRuntime',Owner)
+    result=managed.run_code_update(selected)
+    assert result['complete'] and result['targets'][0]['result']['local_reader']['phase']=='select'
+    assert 'reader_completion' not in result
+
+
+@pytest.mark.parametrize('value',[{}, {'action':'native-current','plan_digest':'wrong'},
+    {'action':'native-current','plan_digest':'a'*64,'extra':True}])
+def test_native_observation_rpc_refuses_unbounded_or_ambiguous_packets(value,tmp_path):
+    from clusterctl.onboarding_owner_control import reader_rpc
+    import time
+    with pytest.raises(OnboardingError,match='invalid_receiving_control_request'):
+        reader_rpc(SimpleNamespace(root=tmp_path),value,deadline_ns=time.monotonic_ns()+1_000_000_000)
+
+
+@pytest.mark.parametrize('action,maximum', [('native-current', 175), ('status', 55), ('control', 55)])
+def test_owner_read_covers_startup_within_existing_operation_deadline(tmp_path, monkeypatch, action, maximum):
+    from clusterctl import onboarding_receiving_update as receiving
+    clock = 1_000_000_000
+    monkeypatch.setattr(managed.time, 'monotonic_ns', lambda: clock)
+    client = managed.ReaderCommandClient(dict(root=str(tmp_path), command=['owner']))
+    client.deadline_ns = clock + 240_000_000_000
+    seen = []
+    def run(argv, **options):
+        seen.append(options['timeout'])
+        assert float(argv[-1]) == options['timeout']
+        return SimpleNamespace(returncode=0, stdout='{}')
+    monkeypatch.setattr(receiving, '_run_owner', run)
+    assert client._call(dict(action=action)) == {}
+    assert seen == [maximum]
+    client.deadline_ns = clock + 12_000_000_000
+    client._call(dict(action=action))
+    assert seen[-1] == 12
+
+
+@pytest.mark.parametrize('failure', [None, 'offline', 'wrong-plan', 'missing-group'])
+def test_managed_status_is_partial_and_never_prepares_or_replays(tmp_path, monkeypatch, failure):
+    selected = {**spec(), 'owner_observation':str(tmp_path/'routes.json')}
+    plans = {name:dict(name=name) for name in selected['targets']}
+    admission = tmp_path/'admission.json'
+    state = tmp_path/'state'
+    being_seed._write(admission, dict(state=str(state)))
+    retained_path = state/'first/native-code-update.json'
+    retained_path.parent.mkdir(parents=True)
+    being_seed._write(retained_path, dict(pins=dict(operation_id=selected['operation_id'],
+        candidate_digest='a'*64, plan_digest=managed.digest(plans['first'])),
+        dispatching='start', effects={'validate':{},'quiesce':{}},
+        private_authority='must-not-appear-in-status'))
+    original = {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    original_entries = {str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*')}
+    backend = SimpleNamespace(config=SimpleNamespace(admission=admission))
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *args:(backend,plans))
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda *args:pytest.fail('status initialized a writer'))
+    calls=[]
+    class Owner:
+        deadline_ns = None
+        def __init__(self, name): self.name=name
+        def _call(self, packet):
+            calls.append(self.name)
+            assert packet == dict(action='native-current',plan_digest=managed.digest(plans[self.name]))
+            if self.name=='second' and failure=='offline':
+                raise OnboardingError('daemon_timeout')
+            current = dict(plan_digest=managed.digest(plans[self.name]),
+                responder_association='same-connection',process={'pid':7},admission_parent={'pid':6},
+                group={'channel_id':'tribe'},runtime_status={'loaded_runtime':{'qualified_startup':{
+                    'code_digest':'b'*64 if self.name=='third' else 'a'*64}}},
+                group_runtime_status=dict(loaded_application=dict(application_sha256='c'*64,
+                    publication_sha256='d'*64,visibility=dict(release_enabled=True,
+                        catalog_validation='validated',installation_sha256='e'*64,policy_sha256='f'*64)),
+                    receiving=dict(channels={'tribe':dict(process_id=7,phase='select')},
+                        recovery={'tribe':{'state':'recovered'}})))
+            if self.name=='second' and failure=='wrong-plan':
+                current['plan_digest']='0'*64
+            if self.name=='second' and failure=='missing-group':
+                current.pop('group')
+            return current
+    monkeypatch.setattr(managed,'code_update_observers',lambda *args:{n:Owner(n) for n in plans})
+    result = managed.run_code_status(selected)
+    assert result['complete'] is (failure is None)
+    assert result['converged'] is False and result['effects']=='observation-only'
+    assert calls==selected['targets']
+    assert result['targets'][0]['local_reader']['recovery']=='recovered'
+    assert result['targets'][0]['retained_operation']==dict(operation_id=selected['operation_id'],
+        candidate_digest='a'*64,complete=False,dispatching='start',effects=['quiesce','validate'])
+    assert result['targets'][2]['status']=='observed' and not result['targets'][2]['converged']
+    assert 'must-not-appear' not in json.dumps(result)
+    assert {str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*')} == original_entries
+    assert {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}==original
+
+
+def test_managed_check_only_dispatches_to_existing_status_without_update(tmp_path, monkeypatch, capsys):
+    path=tmp_path/'spec.json'
+    being_seed._write(path,spec())
+    monkeypatch.setattr('os.geteuid',lambda:0)
+    monkeypatch.setattr(being_seed,'_read',lambda *args,**kwargs:spec())
+    monkeypatch.setattr(managed,'run_code_update',lambda *_:pytest.fail('status attempted update'))
+    monkeypatch.setattr(managed,'run_code_status',lambda value:dict(complete=True,effects='observation-only'))
+    assert managed.main(['--spec',str(path),'--check-only'])==0
+    assert json.loads(capsys.readouterr().out)['effects']=='observation-only'

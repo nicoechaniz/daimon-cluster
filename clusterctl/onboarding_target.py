@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from . import being_seed, onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import OnboardingError, digest, private_directory, refusal_diagnostic, validate_plan
@@ -62,6 +62,85 @@ def profile(plan: dict) -> dict:
                 advertised_endpoint="http://127.0.0.1:8687/dm-peer/v1", targets=[])
 
 
+def observe_current_native_target(root: Path, *, expected_plan_digest: str,
+                                  deadline_ns: int, owner_type=None,
+                                  expected_binding: dict | None = None) -> dict:
+    """Read an admitted target through its existing owner, without cold startup.
+
+    Current credentials, runtime bundle, signed group, both actual socket peers,
+    process parent and protected plan binding are checked in this invocation.
+    The historical constructor/genesis path remains available for onboarding;
+    this read neither loads a runtime writer nor mints a serving boot proof.
+    """
+    from daimon_matrix.canonical import canonical_bytes
+    from .onboarding_peer import _group_selection_from_bundle
+    from .onboarding_receiving_update import OwnerGroupClient
+    from .owner_process import ParentProcessPresence
+    if type(deadline_ns) is not int or deadline_ns <= time.monotonic_ns():
+        raise OnboardingError('onboarding_observation_deadline_expired')
+    if (root.name != 'runtime' or root.parent.name != 'package'
+            or root.parent.parent.name != 'matrix'):
+        raise OnboardingError('current_onboarding_target_required')
+    matrix = root.parent.parent
+    binding = document(matrix / 'plan.json')
+    if (set(binding) != {'schema','plan_digest','genesis_digest'}
+            or binding['schema'] != 'cluster-onboarding-target/v1'
+            or binding['plan_digest'] != expected_plan_digest
+            or expected_binding is not None and binding != expected_binding):
+        raise OnboardingError('current_onboarding_target_required')
+    bundle = document(root / 'runtime.json')
+    def group_selection():
+        selected = _group_selection_from_bundle(matrix / 'tribe', bundle)
+        if selected is None:
+            return None
+        return dict(tribe_ref=selected['tribe_ref'], application=selected['directory'],
+            visibility=selected['visibility'], socket=str(root / selected['socket']), channel_id='tribe')
+    group = group_selection()
+    if group is None:
+        raise OnboardingError('qualified_onboarding_group_required')
+    paths = (root / 'matrix.sock', Path(group['socket']))
+    sockets = [_socket_identity(path, deadline_ns) for path in paths]
+    horizon = time.time_ns() // 1_000_000 + max(1, (deadline_ns - time.monotonic_ns()) // 1_000_000)
+    factory = OwnerGroupClient if owner_type is None else owner_type
+    with factory(root, paths[1], deadline_ns=deadline_ns) as owner, \
+            factory(root, paths[0], deadline_ns=deadline_ns) as base:
+        current = owner.qualified_identity(expires_at_ms=horizon, require_admitted=True)
+        native = base.base_status()
+        loaded = current['runtime_status'].get('loaded_runtime')
+        application = current['runtime_status'].get('loaded_application')
+        if (current['process'] != native['process'] or current['server'] != native['server']
+                or not isinstance(loaded, dict)
+                or loaded.get('runtime_bundle_sha256') != digest(bundle)
+                or current.get('verified_identity', {}).get('runtime_bundle_sha256') != digest(bundle)
+                or native['runtime_status'].get('loaded_runtime') != loaded
+                or not isinstance(loaded.get('qualified_startup'), dict)
+                or not isinstance(application, dict)
+                or application.get('loaded_base_sha256') != hashlib.sha256(canonical_bytes(loaded)).hexdigest()):
+            raise OnboardingError('receiving_control_process_changed')
+        with ParentProcessPresence(current['process']) as parent:
+            if (document(root / 'runtime.json') != bundle
+                    or document(matrix / 'plan.json') != binding
+                    or group_selection() != group
+                    or any((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                        for before, after in zip(sockets, (path.lstat() for path in paths)))):
+                raise OnboardingError('receiving_bootstrap_public_preimage_changed')
+            if owner._observer is None or base._observer is None:
+                raise OnboardingError('receiving_owner_scope_required')
+            owner._observer.verify()
+            base._observer.verify()
+            parent.verify()
+            if time.monotonic_ns() >= deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
+            return dict(schema='cluster-onboarding-runtime-presence/v1',
+                plan_digest=expected_plan_digest, origin=current['server'], process=current['process'],
+                admission_parent=parent.process, runtime_id=loaded['runtime_id'],
+                runtime_sha256=digest(bundle), runtime_status=native['runtime_status'],
+                group=group, group_runtime_status=current['runtime_status'],
+                receiving_identity=current['identity'], receiving_readiness='unobserved',
+                responder_association='same-connection',
+                observation_method='authenticated-current-owner-base-and-group')
+
+
 class Target:
     def __init__(self, home: Path, plan: dict, genesis: dict, *, code: Path | None = None,
                  code_uid: int = 0, code_digest: str | None = None,
@@ -69,10 +148,13 @@ class Target:
         self.home = private_directory(home)
         self.plan = validate_plan(plan)
         self.genesis = genesis
+        # An external maintenance helper is not the selected body's SDK. Keep
+        # the explicit code context for every historical-base verification.
+        self._existing_options: dict[str, Any] = {} if code is None else dict(code=code, code_uid=code_uid)
         self.existing = genesis.get("schema") == "cluster-onboarding-existing-base/v1"
         if self.existing:
             from .onboarding_existing import validate_base
-            validate_base(genesis, self.plan)
+            validate_base(genesis, self.plan, **self._existing_options)
         self.root = home / ".local/state/daimon-onboarding" / plan["name"] / "matrix"
         self.preparation = self.root / "preparation"
         self.package = self.root / "package"
@@ -100,13 +182,14 @@ class Target:
         from daimon_matrix import operator_first_embodiment as first, operator_rebirth
         if self.existing:
             from .onboarding_existing import public_base_bundle
-            return operator_rebirth.authority_from_runtime_bundle(public_base_bundle(self.genesis, self.plan))
+            return operator_rebirth.authority_from_runtime_bundle(public_base_bundle(
+                self.genesis, self.plan, **self._existing_options))
         return first._initial_base(self.genesis)
 
     def _profile(self) -> dict:
         if self.existing:
             from .onboarding_existing import target_profile
-            return target_profile(self.genesis, self.plan)
+            return target_profile(self.genesis, self.plan, **self._existing_options)
         return profile(self.plan)
 
     def _activation_authority(self, request: dict, activation: dict):
@@ -215,6 +298,56 @@ class Target:
                 remaining_execution=remaining_execution,
                 snapshot=lambda: bootstrap_group(self, self.document_bundle()))
 
+    def migrate_visibility(self, request: dict, *, deadline_ns: int) -> dict:
+        """Upgrade retained local catalogs under the existing native writer.
+
+        The caller freezes the already published group, not a new installation.
+        Exact retry preserves originals and performs no publication or transport.
+        """
+        from .onboarding_peer import (approved_group_authorities, migrate_published_catalogs,
+            visibility_migration_request)
+        from .onboarding_group_admission import load_owner_runtime
+        from .onboarding_receiving_update import bootstrap_group
+
+        def budget():
+            if time.monotonic_ns() >= deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
+        visibility_migration_request(request, allow_capability_bootstrap=True)
+        budget()
+        effective_runtime = request['runtime_sha256']
+        bootstrap = request.get('capability_bootstrap')
+        if bootstrap is not None:
+            from .onboarding_receiving_update import GuestOwnerBootstrap
+            if (bootstrap.get('operation_id') != request['operation_id']
+                    or bootstrap.get('runtime_sha256') != request['runtime_sha256']
+                    or bootstrap.get('mode') != 'expand'
+                    or bootstrap.get('preservation', {}).get('origin') != request['origin']):
+                raise OnboardingError('native_code_update_migration_binding_changed')
+            owner = GuestOwnerBootstrap(self, bootstrap)
+            ready = owner.execute('stage', deadline_ns=deadline_ns)
+            published = owner.execute('publish', deadline_ns=deadline_ns,
+                ready_sha256=ready['ready_sha256'])
+            effective_runtime = published['runtime_sha256']
+        budget()
+        with being_seed._locked(self.root), self._runtime_writer():
+            bundle = self.document_bundle()
+            group = bootstrap_group(self, bundle)
+            expected = request['group']
+            if (digest(bundle) != effective_runtime
+                    or bundle['local_origin'] != request['origin']):
+                raise OnboardingError('native_code_update_migration_binding_changed')
+            runtime_root = self.package / 'runtime'
+            authorities = approved_group_authorities(runtime_root, self.root / 'tribe', bundle)
+            version = migrate_published_catalogs(lambda: load_owner_runtime(
+                runtime_root, self._reader, authorities=authorities,
+                qualified_startup=self.qualified_startup), group, expected,
+                snapshot=lambda: bootstrap_group(self, self.document_bundle()), budget=budget)
+            return dict(schema='cluster-native-visibility-migrated/v1',
+                operation_id=request['operation_id'], runtime_sha256=effective_runtime,
+                **({'predecessor_runtime_sha256': request['runtime_sha256'],
+                    'capability_bootstrap_sha256': digest(bootstrap)} if bootstrap is not None else {}),
+                group=expected, catalog_schema_version=version)
+
     def prepare(self) -> dict:
         from daimon_matrix import canonical, keystore, operator_first_embodiment as first
         current = self.home
@@ -315,7 +448,8 @@ class Target:
                     from daimon_matrix import operator_rebirth
                     from .onboarding_existing import public_base_bundle
                     operator_rebirth.activate_target_runtime(self.package, self.preparation,
-                        prepared, request, activation, public_base_bundle(self.genesis, self.plan), self._reader)
+                        prepared, request, activation, public_base_bundle(
+                            self.genesis, self.plan, **self._existing_options), self._reader)
                 else:
                     first.activate_runtime(self.package, self.genesis, self.preparation,
                                            prepared, request, activation, self._reader)
@@ -392,7 +526,8 @@ class Target:
     def _controller_comparison(self, expected: dict, bundle: dict, store, signing_key: dict) -> tuple[dict, dict | None]:
         """Observe the native one-controller successor without changing history.
 
-        Signed native original-profile renewals retain their role, methods,
+        Signed native original-profile renewals retain their role; explicit owned-event
+        read expansion adds only we.event.get to observe. Both retain the existing
         client/key binding and historical receipt. Their validity windows may
         advance after expiry; they do not become another birth ceremony.
         Normalize only for the retained credential/peer comparison. Current
@@ -421,32 +556,34 @@ class Target:
             # The authenticated current signature and unchanged key IDs below
             # establish ownership; neither a newer counter nor dates alone do.
             renewed = []
-            changing = {'capability_id', 'not_before_ms', 'not_after_ms'}
+            changed_profiles = []
             for old, new in zip(previous, current[:-1], strict=True):
                 if old == new:
                     continue
                 before, after = old['descriptor'], new['descriptor']
-                comparison = after
-                if before['methods'] != after['methods']:
-                    # The maintained native event-reader upgrade already
-                    # authenticates this exact additive observe profile. Read
-                    # its signed current binding below; grant nothing here.
-                    if (old['profile'] != profiles.operator_capability_profile('observe')
-                            or set(after['methods']) != set(before['methods']) | {'we.event.get'}
-                            or frozenset(after['methods']) != profiles.OPERATOR_CAPABILITY_PROFILES['observe']):
-                        raise ValueError
-                    comparison = {**after, 'methods': before['methods']}
+                expanded = (old['profile'] == profiles.operator_capability_profile('observe')
+                    and 'we.event.get' not in before['methods']
+                    and after['methods'] == sorted([*before['methods'], 'we.event.get'])
+                    and frozenset(after['methods']) == profiles.OPERATOR_CAPABILITY_PROFILES['observe'])
+                changing = {'capability_id', 'not_before_ms', 'not_after_ms'}
+                if expanded:
+                    changing.add('methods')
+                window_changed = any(before[key] != after[key] for key in ('not_before_ms', 'not_after_ms'))
                 if (expected['schema'] != 'dm.runtime.bundle/v8'
                         or set(old) != set(new) or set(before) != set(after)
                         or any(old[key] != new[key] for key in old if key != 'descriptor')
-                        or any(before[key] != comparison[key] for key in before if key not in changing)
+                        or any(before[key] != after[key] for key in before if key not in changing)
                         or before['status'] != 'active'
-                        or not before['not_before_ms'] < before['not_after_ms'] <= after['not_before_ms']
-                        or not after['not_before_ms'] < after['not_after_ms'] <=
-                            after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS
-                            + profiles.OPERATOR_CAPABILITY_NOT_BEFORE_SKEW_MS):
+                        or not (expanded or window_changed)
+                        or window_changed and (
+                            not before['not_before_ms'] < before['not_after_ms'] <= after['not_before_ms']
+                            or not after['not_before_ms'] < after['not_after_ms'] <=
+                                after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS
+                                + profiles.OPERATOR_CAPABILITY_NOT_BEFORE_SKEW_MS)):
                     raise ValueError
-                renewed.append((after['not_before_ms'], after['not_after_ms']))
+                changed_profiles.append(new)
+                if window_changed:
+                    renewed.append((after['not_before_ms'], after['not_after_ms']))
             if renewed and len(set(renewed)) != 1:
                 raise ValueError
             label = expected['runtime_label']
@@ -471,7 +608,7 @@ class Target:
                 signing_key=signing_key, capability_rows=current)
             # A renewed descriptor must be installed in its own existing client;
             # rendering only the controller would leave the original role unusable.
-            for selected in (current if renewed else [row]):
+            for selected in [*changed_profiles, row]:
                 selected_profile = selected['profile']
                 directory = private_directory(self.package / 'runtime' / selected_profile['client_directory'])
                 key_path = directory / selected_profile['client_key_filename']
@@ -841,67 +978,12 @@ class Target:
                 return dict(current, admission_parent=parent.process, runtime_sha256=digest(bundle))
 
     def current_running(self, *, deadline_ns: int | None) -> dict:
-        """Observe an admitted preservation update without replaying onboarding.
-
-        This is the current authenticated public bundle and signed group, not
-        proof of the original enrollment ceremony. The maintenance controller
-        still compares the result with its frozen identity/artifact selection.
-        No custody, archived pair history or runtime writer lock is opened.
-        """
-        from daimon_matrix.canonical import canonical_bytes
-        from .onboarding_peer import observed_group
-        from .onboarding_receiving_update import OwnerGroupClient
-        from .owner_process import ParentProcessPresence
-        if type(deadline_ns) is not int or deadline_ns <= time.monotonic_ns():
+        """Observe current admission while retaining this Target's exact binding."""
+        if type(deadline_ns) is not int:
             raise OnboardingError('onboarding_observation_deadline_expired')
-        root = self.package / 'runtime'
-        binding = document(self.root / 'plan.json')
-        if binding != self._binding():
-            raise OnboardingError('current_onboarding_target_required')
-        bundle = self.document_bundle()
-        group = observed_group(self, bundle)
-        if group is None:
-            raise OnboardingError('qualified_onboarding_group_required')
-        paths = (root / 'matrix.sock', Path(group['socket']))
-        sockets = [_socket_identity(path, deadline_ns) for path in paths]
-        horizon = time.time_ns() // 1_000_000 + max(1, (deadline_ns - time.monotonic_ns()) // 1_000_000)
-        with OwnerGroupClient(root, paths[1], deadline_ns=deadline_ns) as owner, \
-                OwnerGroupClient(root, paths[0], deadline_ns=deadline_ns) as base:
-            current = owner.qualified_identity(expires_at_ms=horizon, require_admitted=True)
-            native = base.base_status()
-            loaded = current['runtime_status'].get('loaded_runtime')
-            application = current['runtime_status'].get('loaded_application')
-            if (current['process'] != native['process'] or current['server'] != native['server']
-                    or not isinstance(loaded, dict)
-                    or loaded.get('runtime_bundle_sha256') != digest(bundle)
-                    or current.get('verified_identity', {}).get('runtime_bundle_sha256') != digest(bundle)
-                    or native['runtime_status'].get('loaded_runtime') != loaded
-                    or not isinstance(loaded.get('qualified_startup'), dict)
-                    or not isinstance(application, dict)
-                    or application.get('loaded_base_sha256') != hashlib.sha256(canonical_bytes(loaded)).hexdigest()):
-                raise OnboardingError('receiving_control_process_changed')
-            with ParentProcessPresence(current['process']) as parent:
-                if (self.document_bundle() != bundle
-                        or document(self.root / 'plan.json') != binding
-                        or observed_group(self, bundle) != group
-                        or any((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
-                            for before, after in zip(sockets, (path.lstat() for path in paths)))):
-                    raise OnboardingError('receiving_bootstrap_public_preimage_changed')
-                if owner._observer is None or base._observer is None:
-                    raise OnboardingError('receiving_owner_scope_required')
-                owner._observer.verify()
-                base._observer.verify()
-                parent.verify()
-                if time.monotonic_ns() >= deadline_ns:
-                    raise OnboardingError('onboarding_observation_deadline_expired')
-                return dict(schema='cluster-onboarding-runtime-presence/v1',
-                    plan_digest=digest(self.plan), origin=current['server'], process=current['process'],
-                    admission_parent=parent.process, runtime_id=loaded['runtime_id'],
-                    runtime_sha256=digest(bundle), runtime_status=native['runtime_status'],
-                    group=group, group_runtime_status=current['runtime_status'],
-                    receiving_identity=current['identity'], receiving_readiness='unobserved',
-                    responder_association='same-connection',
-                    observation_method='authenticated-current-owner-base-and-group')
+        return observe_current_native_target(self.package / 'runtime',
+            expected_plan_digest=digest(self.plan), expected_binding=self._binding(),
+            deadline_ns=deadline_ns)
 
     @staticmethod
     def _bootstrap_public_identity(bundle: dict, config) -> dict:
@@ -957,7 +1039,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-resource", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
+    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "visibility-migrate", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-resource", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
     parser.add_argument("--diagnostics", action="store_true", help="write bounded nonsecret refusal detail to stderr")
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
@@ -972,6 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--peer-packet", type=Path)
     parser.add_argument("--peer-packet-sha256")
     parser.add_argument("--peer-being-ref")
+    parser.add_argument("--visibility-migration-json")
     parser.add_argument("--messaging-application", type=Path)
     visibility = parser.add_mutually_exclusive_group()
     visibility.add_argument("--receive-only", action="store_true")
@@ -989,6 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--identity-expires-at-ms', type=int)
     parser.add_argument('--native-tooling-json')
     parser.add_argument('--bootstrap-request-json')
+    parser.add_argument('--bootstrap-capability-additions-json')
     parser.add_argument('--bootstrap-ready-sha256')
     parser.add_argument('--bootstrap-timeout-seconds', type=float)
     parser.add_argument('--bootstrap-initial', action='store_true')
@@ -1030,7 +1114,18 @@ def main(argv: list[str] | None = None) -> int:
             raise OnboardingError('invalid_receiving_identity_request')
         if identity_query and not 0 < args.identity_expires_at_ms < 2**53:
             raise OnboardingError('invalid_receiving_identity_request')
+        migrating = args.action == 'visibility-migrate'
+        if (migrating != (args.visibility_migration_json is not None)
+                or migrating and (len(args.visibility_migration_json.encode()) > 16384
+                    or args.observation_timeout_seconds is None or args.ready_fd is not None)):
+            raise OnboardingError('native_code_update_migration_binding_required')
         bootstrapping = args.action.startswith('receiving-bootstrap-')
+        if args.bootstrap_capability_additions_json is not None:
+            from .onboarding_receiving_update import guest_capability_additions
+            if (args.action != 'receiving-bootstrap-freeze' or args.bootstrap_initial
+                    or args.bootstrap_initial_service or len(args.bootstrap_capability_additions_json.encode()) > 1024):
+                raise OnboardingError('invalid_receiving_bootstrap_request')
+            guest_capability_additions(json.loads(args.bootstrap_capability_additions_json))
         if bootstrapping:
             if (args.bootstrap_timeout_seconds is None or not math.isfinite(args.bootstrap_timeout_seconds)
                     or not 0 < args.bootstrap_timeout_seconds <= 60 or args.ready_fd is not None
@@ -1049,8 +1144,8 @@ def main(argv: list[str] | None = None) -> int:
                     or not 0 < args.authorization_expires_at_ms < 2**53)
                 or admitting and ((timeout is None) != (args.authorization_expires_at_ms is None))):
             raise OnboardingError('invalid_receiving_observation_timeout')
-        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
-                or not math.isfinite(timeout) or not 0 < timeout <= 60):
+        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+                or not math.isfinite(timeout) or not 0 < timeout <= (300 if args.action in {'visibility-migrate', 'sdk-prepare'} else 60)):
             raise OnboardingError('invalid_receiving_observation_timeout')
         if bootstrapping:
             timeout = args.bootstrap_timeout_seconds
@@ -1083,7 +1178,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime = onboarding_code_successor.selection(args.runtime_code, args.runtime_digest,
             args.code, plan['release_digest'], uid=0)
         sdk_parameters = onboarding_code_successor.sdk_parameters(runtime)
-        if (controlling or identity_query or bootstrapping or grouping or args.require_loaded
+        if (migrating or controlling or identity_query or bootstrapping or grouping or args.require_loaded
                 or admitting and timeout is not None) and not sdk_parameters:
             raise OnboardingError('qualified_onboarding_target_observer_required')
         matrix_commit = sdk_parameters.get('matrix_commit', onboarding_sdk.MATRIX_COMMIT)
@@ -1165,12 +1260,20 @@ def main(argv: list[str] | None = None) -> int:
             stage = args.action
             if args.action == 'receiving-bootstrap-freeze':
                 result = freeze_guest_bootstrap(target, deadline_ns=deadline_ns, initial=args.bootstrap_initial,
-                    initial_service=args.bootstrap_initial_service)
+                    initial_service=args.bootstrap_initial_service,
+                    capability_additions=(None if args.bootstrap_capability_additions_json is None
+                        else json.loads(args.bootstrap_capability_additions_json)))
             else:
                 owner = GuestOwnerBootstrap(target, json.loads(args.bootstrap_request_json))
                 result = owner.execute(args.action.removeprefix('receiving-bootstrap-'),
                     deadline_ns=deadline_ns, ready_sha256=args.bootstrap_ready_sha256)
             print(json.dumps(result))
+            return 0
+        if migrating:
+            if observation_deadline_ns is None:
+                raise OnboardingError('native_code_update_migration_binding_required')
+            print(json.dumps(target.migrate_visibility(json.loads(args.visibility_migration_json),
+                deadline_ns=observation_deadline_ns)))
             return 0
         if controlling:
             if args.control_command == Path('-'):

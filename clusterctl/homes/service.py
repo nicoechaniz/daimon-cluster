@@ -366,6 +366,16 @@ class Application:
                 return selected
         return None
 
+    def review_home(self, reference):
+        registered = self.registry.resource_owner(reference)
+        if not registered:
+            return None
+        home = registered["home"]
+        configured = self.homes.get(home)
+        if configured and configured["owner_being_ref"] == registered["owner"]:
+            return home
+        return None
+
     def owner(self, home, token, operation, payload):
         if home not in self.homes or not token:
             raise ValueError("home_owner_denied")
@@ -428,9 +438,16 @@ class Application:
                     or not isinstance(payload['resource'], str) or not re.fullmatch('[a-f0-9]{32}', payload['resource'])
                     or not isinstance(payload['version'], str) or not re.fullmatch('[a-f0-9]{64}', payload['version'])):
                 raise ValueError('invalid_review_access_scope')
-            reader = self.authority.actor(payload['actor_ref'])
+            reference, version = payload['resource'], payload['version']
+            source = self.review_home(reference)
+            # A foreign decision is scoped to editions already readable by
+            # this operator. It cannot probe somebody else's protected work.
+            visible_to_operator = source and (
+                source == home or self.selected(source, reference, version, owner, False)
+            )
+            reader = self.authority.actor(payload['actor_ref']) if visible_to_operator else None
             allowed = bool(reader and reader.enabled and self.selected(
-                home, payload['resource'], payload['version'], reader, False))
+                source, reference, version, reader, False))
             return {'schema': 'dm.review-access/v1', **payload, 'allowed': allowed}
         if operation == "sync":
             if payload:
@@ -655,9 +672,9 @@ def render(home, works, subject, vpn, *, signed_out=False, passkeys=False, key_r
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(home["name"])} · Home</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><span>DAIMON MATRIX</span>{auth}</nav>{notice}<p id="passkey-status" role="status" aria-live="polite"></p><header><svg viewBox="0 0 88 48" aria-hidden="true"><ellipse cx="44" cy="24" rx="41" ry="17"/><ellipse cx="44" cy="24" rx="22" ry="22"/><circle cx="44" cy="24" r="4"/></svg><small>{esc(scope)}</small><h1>{esc(home["name"])}</h1><p>A shared starting place for ideas, experiments and things we make.</p><a href="{esc(home["vpn_url"], quote=True)}">Dedicated VPN space ↗</a></header><section class="works">{cards or "<p>Room for what comes next. Selected work will appear here as it is shared.</p>"}</section><nav class="ring" aria-label="Tribe web-ring">{rings}</nav><footer>Only work selected for your current access is shown. This page does not indicate current daimon activity.</footer></main></body></html>'''.encode()
 
 
-def artifact_context(app, home, reference, version, subject, vpn, *, origin, parent_token):
+def artifact_context(app, home, reference, version, subject, vpn, *, origin, parent_token, parent_home=None, selection=None):
     """Existing isolated reader context, shared by preview and trusted apps."""
-    selected = app.selected(home, reference, version, subject, vpn)
+    selected = selection if selection is not None else app.selected(home, reference, version, subject, vpn)
     if not selected or selected["kind"] != "artifact":
         raise ValueError("preview_denied")
     content_origin = app.config[
@@ -671,6 +688,7 @@ def artifact_context(app, home, reference, version, subject, vpn, *, origin, par
         version=selected["version_ref"],
         subject=subject,
         parent_token=parent_token,
+        parent_home=parent_home,
     )
     prefix = content_origin + "/r/" + child + "/"
     source = prefix + quote(selected["entrypoint"])
@@ -683,13 +701,18 @@ def review_source(app, home, reference, version, subject, vpn, *, origin, parent
         raise ValueError('immutable_review_source_required')
     # Check eligibility before minting a child context. The ordinary policy
     # checks current and historical audiences for this exact visitor/version.
-    selected = app.selected(home, reference, version, subject, vpn)
+    source_home = app.review_home(reference)
+    if source_home is None or (source_home != home and subject is None):
+        raise ValueError('review_source_unavailable')
+    source_vpn = vpn and source_home == home
+    selected = app.selected(source_home, reference, version, subject, source_vpn)
     if (not selected or selected['kind'] != 'artifact'
             or not selected['entrypoint'].endswith('.html')
             or not {'review-live.json', 'gallery.json'}.issubset(selected['files'])):
         raise ValueError('review_source_unavailable')
     selected, content_origin, _, source = artifact_context(
-        app, home, reference, version, subject, vpn, origin=origin, parent_token=parent_token)
+        app, source_home, reference, version, subject, source_vpn, origin=origin,
+        parent_token=parent_token, parent_home=home, selection=selected)
     return {'schema': 'dm.home-review-source/v1', 'resource': reference,
             'version': selected['version_ref'], 'content_origin': content_origin,
             'frame': {'src': source, 'sandbox': 'allow-scripts'},
@@ -1297,6 +1320,18 @@ def handler(app, *, owner=False):
             row = app.sessions.resolve_content(ticket, content_origin=origin)
             if not row:
                 raise ValueError("content_read_denied")
+            source_home = app.homes.get(row["home"])
+            if not source_home:
+                raise ValueError("content_source_home_unavailable")
+            frame_ancestors = source_home["public_url"] + " " + source_home["vpn_url"]
+            if row.get("parent_home", row["home"]) != row["home"]:
+                parent_home = app.homes.get(row["parent_home"])
+                parent_origin = row["parent_origin"]
+                if not parent_home or parent_origin not in (
+                    parent_home["public_url"].rstrip("/"), parent_home["vpn_url"].rstrip("/")
+                ):
+                    raise ValueError("content_parent_origin_changed")
+                frame_ancestors = parent_origin
             subject = (
                 app.policy.current(row["actor"], row["revision"])
                 if row["actor"]
@@ -1367,9 +1402,7 @@ def handler(app, *, owner=False):
                     + "; connect-src "
                     + prefix
                     + "; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors "
-                    + app.homes[row["home"]]["public_url"]
-                    + " "
-                    + app.homes[row["home"]]["vpn_url"],
+                    + frame_ancestors,
                 )
                 self.end_headers()
                 if self.command != "HEAD":

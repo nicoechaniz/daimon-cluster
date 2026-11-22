@@ -367,12 +367,16 @@ class Sessions:
         subject,
         parent_token,
         ttl=900,
+        parent_home=None,
     ):
         """Cookie-free child read, bound to one artifact and its parent session."""
         if not 1 <= ttl <= 3600:
             raise ValueError("invalid_content_read_expiry")
+        if parent_home is not None and parent_home != home and not subject:
+            raise ValueError("content_read_parent_required")
         parent = (
-            self.resolve(parent_token, home=home, origin=origin) if subject else None
+            self.resolve(parent_token, home=parent_home or home, origin=origin)
+            if subject else None
         )
         if subject and (
             not parent
@@ -421,19 +425,27 @@ class Sessions:
                     and row["content_origin"] == content_origin
                     and row["created"] <= now < row["expires"]
                 )
+                # The digest identifies the exact session checked against the
+                # reader Home and origin at issue time. The ticket's Home is
+                # the source used to recheck the artifact policy.
+                parent = None
                 if valid and row["parent"]:
                     parent = db.execute(
                         "SELECT * FROM sessions WHERE digest=?", (row["parent"],)
                     ).fetchone()
                     valid = (
                         parent
-                        and parent["home"] == row["home"]
                         and self.active(db, parent, now)
                         and (parent["actor"], parent["revision"])
                         == (row["actor"], row["revision"])
                     )
                 db.commit()
-                return dict(row) if valid else None
+                if not valid:
+                    return None
+                result = dict(row)
+                if parent:
+                    result.update(parent_home=parent["home"], parent_origin=parent["origin"])
+                return result
             except BaseException:
                 db.rollback()
                 raise

@@ -363,3 +363,29 @@ by actual catalog/alias/stylesheet readback and a browser at desktop and phone
 widths. Preserve the current immutable gateway release, SDK, configuration,
 Homemaker selection and state during a source-only overlay/rollback. A passing
 fixture or an own-being browser does not establish a human phone's acceptance.
+
+### Review of an edition registered on another Home
+
+The same-origin parent calls
+`GET /access/review-source/<resource>/<immutable-version>`. The gateway
+resolves the resource's immutable owner and source Home in the registry and
+checks that owner against the current trusted Home configuration. The
+reader's existing, origin-bound session identifies the actor. The source Home
+checks both the current publication audience and the pinned edition audience.
+Foreign review requires an authenticated actor and does not inherit network-only
+permission from the receiving Home.
+
+The descriptor and renderer protocol remain unchanged. Select only the exact
+`content_origin` reported by the configured gateway in the Nexus frame CSP.
+The isolated ticket reads only the selected files from the registered backend
+and revision. The gateway checks the source audience on each request. A foreign
+frame can be embedded only by the exact parent session origin. Existing
+session expiration, ancestry, logout and actor revocation invalidate its
+ticket. The existing parent handshake remains required.
+
+The owner-local `check-review-access` keeps the same request and response.
+A foreign decision additionally requires that the authenticated operator can
+read the same source edition. The nominated participant must independently
+pass both source audience checks. The operator call never creates a reader
+session or renderer ticket. Nexus table grants and native placement remain
+with their existing writers.

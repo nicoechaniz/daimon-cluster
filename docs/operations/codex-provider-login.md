@@ -71,3 +71,32 @@ startup restored successful native account and rate-limit requests; Casa's
 existing history remained readable. No earlier failed request was replayed.
 Human Telegram acceptance remains separate. Eko's separately selected account
 is explicitly excluded from this renewal procedure.
+
+## Preventive shared-account recovery
+
+A revoked native token, expired historical cache or missing `auth.json` does not
+prove that a human must log in. Inspect current `accountSession/list`, selected
+workspace, `account/read` and quota state, then the existing account's authorized
+custody and live shared source. Do not install an alternate account, impersonate
+another being, or copy a peer's login merely because it is reachable. The original
+protected sharing grant must cover this exact account, plan owner and receiver.
+Provider-required MFA/consent remains real; demonstrate that dependency before
+creating a human-only pending action. Do not ask the human to repeat work while a
+valid authorized source or supported same-account refresh remains available.
+
+`tools/renew_shared_native_auth.py` validates that held account/profile/grant,
+original plan pairing and separately observed native workspace all match. It
+reuses `install_shared_cache` for an absent or identical receiving cache and
+preserves any different file. Absence of the legacy file never invents a new
+identity: observed native workspace is required. Use the existing replacement
+writer for an invalid nonempty cache with a retained exact preimage/CAS.
+
+For a changed same-account cache, Core's `account/read(refreshToken=true)` uses
+its existing refresh guard to reload different persisted auth before requesting
+a token refresh. This avoids unnecessarily rotating a shared refresh token.
+Verify current account/workspace and actual quota/catalog response afterward,
+plus unchanged native/listener/Matrix process identities. Never replay failed
+model inputs. A successful provider metadata request is not a human response.
+Keep one small result per receiver and the original unresolved operation. Remove
+only consumed task-owned credential staging after exact receiving verification;
+never publish credential bytes or put them in command arguments/diagnostics.

@@ -232,7 +232,7 @@ function createReviewCache(maxEntries = 3, maxBytes = 48 * 1024 * 1024) {
   };
 }
 
-function installLiveReview(frame) {
+function installLiveReview(frame, pinnedAssetRoot = null) {
   const root = frame.dataset.downloadRoot || '';
   const match = /^\/works\/([a-f0-9]{32})\/([a-f0-9]{64})\/$/.exec(root);
   if (!match) return;
@@ -333,7 +333,7 @@ function installLiveReview(frame) {
   }
   const digest = async data => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data)),b=>b.toString(16).padStart(2,'0')).join('');
   async function loadGallery(manifest, candidateResource, next, signal, requestedScene=null) {
-    const prefix = '/works/'+candidateResource+'/'+next+'/';
+    const prefix = pinnedAssetRoot || '/works/'+candidateResource+'/'+next+'/';
     async function readFile(file, sha, limit) {
       const response = await fetch(prefix+file,{cache:'no-store',signal});
       if ([401,403,404].includes(response.status)) geometryCache.evictResource(candidateResource);
@@ -409,7 +409,7 @@ function installLiveReview(frame) {
       const controller = new AbortController(); pending = controller;
       const deadline = setTimeout(() => {controller.abort();if(acknowledgment){post({type:'home-artifact:review-cancel',requestId:acknowledgment.requestId});acknowledgment.resolve(false);acknowledgment=null;}}, 20000);
       try {
-        const response = await fetch(root + 'review-live.json', {cache:'no-store',signal:controller.signal});
+        const response = await fetch((pinnedAssetRoot || root) + 'review-live.json', {cache:'no-store',signal:controller.signal});
         if (response.headers.get('X-Home-Version') !== version) throw Error('Pinned version mismatch');
         const manifest = JSON.parse(new TextDecoder().decode(await bytes(response,16384)));
         if (manifest.schema !== 'dm.review-live/v1' || manifest.gallery !== 'gallery.json' || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '')) throw Error('Invalid pinned manifest');
@@ -524,13 +524,15 @@ globalThis.DaimonHomeReview = Object.freeze({
         || source.hydration?.gallery !== 'gallery.json'
         || source.adapter_handshake !== 'required') throw Error('Invalid pinned source');
     const origin = new URL(source.content_origin), src = new URL(source.frame.src);
+    const ticket = /^\/r\/([A-Za-z0-9_-]{43})\//.exec(src.pathname)?.[1];
     if (origin.protocol !== 'https:' || origin.origin !== source.content_origin
         || src.origin !== origin.origin || src.username || src.password || src.search || src.hash
-        || !/^\/r\/[A-Za-z0-9_-]{43}\//.test(src.pathname)) throw Error('Invalid isolated context');
+        || !ticket) throw Error('Invalid isolated context');
     frame.setAttribute('sandbox', 'allow-scripts');
     frame.dataset.downloadRoot = '/works/' + source.resource + '/' + source.version + '/';
     frame.dataset.liveReview = 'pinned';
-    const hydration = installLiveReview(frame);
+    const assetRoot = `/access/review-source/${source.resource}/${source.version}/assets/${ticket}/`;
+    const hydration = installLiveReview(frame, assetRoot);
     const loaded = () => frame.contentWindow.postMessage({
       type:'home-artifact:capabilities', downloads:false, reviewPacked:true, reviewScenes:true, reviewJSON:true,
       reviewPinned:true, liveReview:false, reviewCatalog:false, reviewContext:true,

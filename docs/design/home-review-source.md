@@ -33,7 +33,15 @@ It reuses the existing checksum-verified fixed-version hydrator, explicitly
 disables resource switching/current polling and opts into the renderer state
 handshake. One frame can have only one mount; dispose removes its listeners,
 aborts owned fetches/timers and releases the frame. Caller mutation cannot change
-the pinned descriptor. Legacy work pages retain their existing behavior.
+the pinned descriptor. The parent reads hydration JSON from
+`/access/review-source/RESOURCE/VERSION/assets/TICKET/FILE` on its own origin.
+The gateway binds the read to the descriptor's issued frame lease, exact parent
+session, source Home, resource and immutable version. It rechecks the source's
+current and pinned audiences and forwards only selected review manifest, gallery
+or indexed scene JSON, with the original version header and no caching. This
+route does not serve the frame's HTML or other active content. The app can keep
+`connect-src 'self'` and its current isolated `frame-src`. Ordinary work pages
+continue to read through their own Home's `/works/` path.
 
 The trusted application handles only messages from that exact opaque child,
 validates its declared adapter/version and pinned inventory, and obtains actual

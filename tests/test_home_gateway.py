@@ -450,9 +450,34 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert headers['Content-Security-Policy'].endswith('frame-ancestors https://two.example')
             assert headers['Cache-Control'] == 'no-store'
             assert get(child.path, extra={'Host': 'private-content.example', 'X-Daimon-Vpn': '1'})[0] == 404
+            assets = review + "/assets/" + child.path.split("/")[2] + "/"
+            gallery = assets + "gallery.json"
+            status, body, headers = get(gallery, cross_actor, extra=receiver_headers)
+            assert status == 200 and body == b"<p>Selected bytes</p>"
+            assert headers["X-Home-Version"] == entries[3]["version_ref"]
+            assert headers["Cache-Control"] == "no-store"
+            assert headers["Content-Type"] == "application/json; charset=utf-8"
+            assert headers["Access-Control-Allow-Origin"] is None
+            assert get(assets + "review-live.json", cross_actor, extra=receiver_headers)[0] == 200
+            assert get(gallery, extra=receiver_headers)[0] == 404
+            assert get(gallery, denied_actor, extra=receiver_headers)[0] == 404
+            second_session = app.sessions.issue(
+                home="two", origin=receiving["public_url"], subject=authority.actor("human-two"))
+            assert get(gallery, second_session, extra=receiver_headers)[0] == 404
+            assert get(gallery, other)[0] == 404
+            assert get(gallery, cross_actor, extra={**receiver_headers, "Origin": "null"})[0] == 404
+            assert get(gallery.replace(entries[3]["version_ref"], "0" * 64), cross_actor,
+                       extra=receiver_headers)[0] == 404
+            assert get(assets + "index.html", cross_actor, extra=receiver_headers)[0] == 404
+            assert get(assets + "scene-001.json", cross_actor, extra=receiver_headers)[0] == 404
+
+            local_child = urlsplit(descriptor["frame"]["src"])
+            local_gallery = review + "/assets/" + local_child.path.split("/")[2] + "/gallery.json"
+            assert get(local_gallery, other)[0] == 200
             assert get('/access/logout', cross_actor, method='POST', extra={
                 **receiver_headers, 'Origin': receiving['public_url'], 'Content-Length': '0'})[0] == 200
             assert get(child.path, extra=content_headers)[0] == 404
+            assert get(gallery, cross_actor, extra=receiver_headers)[0] == 404
             assert get(review.replace(entries[3]['version_ref'], 'current'), other)[0] == 404
             assert get(review + '?url=https://other.example', other)[0] == 404
             assert get('/access/review-source/' + 'a' * 32 + '/' + entries[0]['version_ref'])[0] == 404

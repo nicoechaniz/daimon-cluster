@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import threading
 from urllib.parse import parse_qsl, parse_qs, urlsplit
-from .applications import application, paired_receiver
+from .applications import application, current_launch_url, launch_target_key, paired_receiver
 
 ASSETS = Path(__file__).parent / 'launcher'
 CAPACITY = threading.BoundedSemaphore(4)
@@ -81,7 +81,7 @@ def launch_alias(entry, origin):
     return origin.rstrip('/') + '/apps/open/' + name
 
 
-def catalog(app, home, subject, vpn, *, local_only=False):
+def catalog(app, home, subject, vpn, *, local_only=False, include_duplicate_aliases=False):
     # Aggregate only registered members of this home's already-selected public
     # ring. Do not invent membership from labels or forward its private session.
     origins = {peer['url'].rstrip('/') for peer in app.homes[home]['ring']}
@@ -101,6 +101,7 @@ def catalog(app, home, subject, vpn, *, local_only=False):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(read, selected))
     apps, seen, unavailable = [], set(), 0 if local_only else len(homes) - len(selected)
+    home_origins = {row['public_url'].rstrip('/') for row in app.homes.values()}
     owner_url = owner_app_url(app)
     receivers = getattr(app, 'miniapp_receivers', {})
     receiver = paired_receiver(app, home, subject)
@@ -113,18 +114,24 @@ def catalog(app, home, subject, vpn, *, local_only=False):
 
     for ref, entries, available in results:
         unavailable += not available
-        for entry in entries:
+        # The public card wins when the same visitor can see two links to the
+        # same app. Aliases themselves remain independently audience-checked.
+        for entry in sorted(entries, key=lambda item: item.get('visibility') != 'public'):
             url = entry.get('url')
             owner_app = owner_url is not None and url == owner_url
             published_app = application(entry)
             if entry.get('kind') != 'link' or not (published_app or owner_app or app_url(url)):
                 continue
-            # Private links are never collapsed into a public author's entry.
-            key = (entry['url'], ref)
-            if key in seen:
+            mode = published_app['mode'] if published_app else 'shared' if owner_app else 'legacy-author'
+            if mode in ('shared', 'author'):
+                url = current_launch_url(url, home_origins)
+                if url is None:
+                    continue
+            key = (ref, mode, published_app.get('capability') if published_app else None,
+                   launch_target_key(url) if mode == 'shared' else url)
+            if not include_duplicate_aliases and key in seen:
                 continue
             seen.add(key)
-            mode = published_app['mode'] if published_app else 'shared' if owner_app else 'legacy-author'
             available = True
             if mode == 'paired':
                 selected_url = receivers.get(receiver, {}).get(published_app['capability'])
@@ -195,7 +202,7 @@ def routes(handler, app, path, home, subject, vpn):
         name = path.removeprefix('/apps/open/')
         if not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', name):
             raise ValueError('unknown_app_alias')
-        entries = catalog(app, home, subject, vpn, local_only=True)['apps']
+        entries = catalog(app, home, subject, vpn, local_only=True, include_duplicate_aliases=True)['apps']
         matches = [e for e in entries if urlsplit(e['url']).path == path and e['available']]
         if len(matches) != 1 or matches[0]['target_url'] == matches[0]['url']:
             raise ValueError('unknown_app_alias')

@@ -1,6 +1,6 @@
 """Published application intent is navigation, never an identity/access grant."""
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 def web_url(url):
@@ -13,6 +13,46 @@ def web_url(url):
                     and not parsed.password and not parsed.fragment)
     except ValueError:
         return False
+
+
+def current_launch_url(url, home_origins):
+    """Resolve recognized legacy build selectors without changing app parameters."""
+    if not web_url(url):
+        return None
+    target = urlsplit(url)
+    if f'{target.scheme}://{target.netloc}' not in home_origins:
+        return url
+    if target.path.startswith(('/works/', '/artifacts/', '/r/')):
+        return None  # Raw files and isolated renderer contexts are not App entrances.
+
+    def current_query(path, query):
+        viewer = re.fullmatch(r'/view/[a-f0-9]{32}', path)
+        return [(key, value) for key, value in parse_qsl(query, keep_blank_values=True)
+                if not ((viewer and key == 'version') or
+                        (key in ('v', 'version', 'rev', 'build') and re.fullmatch(r'[a-f0-9]{7,64}', value)))]
+
+    pairs = parse_qsl(target.query, keep_blank_values=True)
+    if target.path == '/access/sso/start':
+        updated = []
+        for key, value in pairs:
+            if key == 'return' and value.startswith('/view/'):
+                viewer = urlsplit(value)
+                query = current_query(viewer.path, viewer.query)
+                if query != parse_qsl(viewer.query, keep_blank_values=True):
+                    value = urlunsplit(viewer._replace(query=urlencode(query)))
+            updated.append((key, value))
+    else:
+        updated = current_query(target.path, target.query)
+    return url if updated == pairs else urlunsplit(target._replace(query=urlencode(updated)))
+
+
+def launch_target_key(url):
+    """Compare exact destinations and deployed aliases with known equivalence."""
+    # The CompAII edge rewrites this public navigation entry to the same
+    # protected service path. Do not infer equivalence from names or slugs.
+    if url == 'https://compaii.dmn.homes/taller-compaii/':
+        return 'https://compaii.dmn.homes/harmonic_lab/'
+    return url
 
 
 def application(entry):

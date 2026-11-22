@@ -363,3 +363,19 @@ by actual catalog/alias/stylesheet readback and a browser at desktop and phone
 widths. Preserve the current immutable gateway release, SDK, configuration,
 Homemaker selection and state during a source-only overlay/rollback. A passing
 fixture or an own-being browser does not establish a human phone's acceptance.
+
+### Canonical Apps destinations
+
+Stable Apps aliases resolve the current application entrance. The launcher
+removes known legacy version selectors from registered Home destinations while
+preserving application parameters and access checks. Raw Home files and isolated
+frame URLs cannot launch from Apps. The publisher rejects new pinned links and
+duplicate targets before writing state. An ordinary Home link can still preserve
+an exact historical review.
+
+For the current reader, equivalent links in the same Home and launch mode
+produce one card. The public card wins when both are visible, including for
+Clúster and the explicitly mapped CompAII Lab route in Caddy. The original
+aliases still enforce their own audiences independently of card deduplication.
+Do not infer equivalence from titles or project names. Retain the current
+publication ID when updating an app to keep its alias and history.

@@ -5,6 +5,7 @@ memory and mutable App state remain in the receiving body's private home.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import stat
 import importlib.util
 import shutil
 import subprocess
+import tempfile
 import time
 
 from . import being_seed
@@ -100,8 +102,13 @@ def prepare_selection(config, plan: dict, store, *, authorize) -> None:
         publish(path, raw)
 
 def verify(root: Path, fingerprint: str, *, uid: int):
+    return _verify(root, fingerprint, uid=uid)[0]
+
+
+def _verify(root: Path, fingerprint: str, *, uid: int, legacy_manifest: Path | None = None):
     being_seed._path(root)
-    raw = regular(root / MARKER, uid=uid, limit=2 * 1024**2)
+    raw = regular(legacy_manifest if legacy_manifest is not None else root / MARKER,
+                  uid=uid, limit=2 * 1024**2)
     if hashlib.sha256(raw).hexdigest() != fingerprint:
         raise OnboardingError('conversation_bundle_changed')
     value = json.loads(raw)
@@ -111,6 +118,9 @@ def verify(root: Path, fingerprint: str, *, uid: int):
             or not 1 <= len(value['files']) <= MAX_FILES):
         raise OnboardingError('conversation_bundle_required')
     expected = value['files']
+    if legacy_manifest is not None and (
+            'codex_package' in value or not all(map(_native_component, expected))):
+        raise OnboardingError('conversation_bundle_codex_package_required')
     for name, checksum in expected.items():
         if (relative(name) != name or name == MARKER or not isinstance(checksum, str)
                 or not re.fullmatch('[0-9a-f]{64}', checksum)):
@@ -139,6 +149,8 @@ def verify(root: Path, fingerprint: str, *, uid: int):
                     raise OnboardingError('conversation_bundle_required')
                 name = path.relative_to(root).as_posix()
                 if name == MARKER:
+                    if legacy_manifest is not None:
+                        raise OnboardingError('conversation_bundle_codex_package_required')
                     continue
                 total += info.st_size
                 if total > MAX_BYTES or name not in expected:
@@ -154,7 +166,7 @@ def verify(root: Path, fingerprint: str, *, uid: int):
                 found.add(name)
     if found != set(expected):
         raise OnboardingError('conversation_bundle_changed')
-    return dict(files=len(found), bytes=total)
+    return dict(files=len(found), bytes=total), value
 
 
 def _native_component(name: str) -> bool:
@@ -326,18 +338,9 @@ def compose_native(app: Path, fingerprint: str, native: Path, output: Path) -> d
                 native_version=metadata['version'], **observed)
 
 
-def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
-                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
-                    state_plan=None):
-    """Expose this selected public executable; never overwrite a guest login/tool."""
-    verify(root, fingerprint, uid=os.geteuid())
-    manifest = json.loads(regular(root / MARKER, uid=os.geteuid(), limit=2 * 1024**2))
+def _qualified_codex(root: Path, fingerprint: str, legacy_manifest: Path | None = None) -> Path:
+    _, manifest = _verify(root, fingerprint, uid=os.geteuid(), legacy_manifest=legacy_manifest)
     package_root = root / manifest.get('codex_package', '.')
-    if prepare_dependencies:
-        dependencies()
-    if state_plan is not None:
-        from .onboarding_vm_state import install
-        install(*state_plan)
     source = package_root / 'bin/codex'
     # The daemon resolves its sibling package and code-mode host. A lone CLI
     # executable reports its version but cannot start the native server.
@@ -354,14 +357,78 @@ def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
         raise OnboardingError('conversation_bundle_codex_package_required') from None
     if not source.is_file() or not os.access(source, os.X_OK):
         raise OnboardingError('conversation_bundle_codex_required')
-    if destination.is_symlink():
-        if destination.readlink() != source:
+    return source
+
+
+def _public_parent(path: Path) -> None:
+    """A verified child must remain behind an administrator-controlled path."""
+    for parent in (path, *path.parents):
+        info = parent.lstat()
+        trusted_sticky = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid())
+                or (info.st_mode & 0o022 and not trusted_sticky)):
+            raise OnboardingError('conversation_bundle_untrusted_parent')
+
+
+def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
+                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
+                    state_plan=None, previous_selection: tuple[Path, str] | None = None,
+                    legacy_selection: tuple[Path, Path] | None = None):
+    """Expose a public CLI or conditionally replace its exact managed predecessor."""
+    legacy_root, legacy_manifest = legacy_selection or (None, None)
+    if legacy_selection is not None and (previous_selection is None
+            or root == previous_selection[0] or legacy_root not in (root, previous_selection[0])):
+        raise OnboardingError('conversation_launcher_successor_scope')
+    if previous_selection is not None:
+        if prepare_dependencies or state_plan is not None:
+            raise OnboardingError('conversation_launcher_successor_scope')
+        for path in (root, previous_selection[0], destination.parent):
+            if not path.is_absolute() or '..' in path.parts:
+                raise OnboardingError('conversation_bundle_untrusted_parent')
+            _public_parent(path)
+        if legacy_manifest is not None:
+            if not legacy_manifest.is_absolute() or '..' in legacy_manifest.parts:
+                raise OnboardingError('conversation_bundle_untrusted_parent')
+            _public_parent(legacy_manifest.parent)
+
+    source = _qualified_codex(root, fingerprint, legacy_manifest if root == legacy_root else None)
+    previous = None
+    if previous_selection is not None:
+        previous_root, previous_pin = previous_selection
+        previous = _qualified_codex(previous_root, previous_pin,
+                                    legacy_manifest if previous_root == legacy_root else None)
+    if prepare_dependencies:
+        dependencies()
+    if state_plan is not None:
+        from .onboarding_vm_state import install
+        install(*state_plan)
+
+    # Serialize this selector's writers without a persistent sidecar.
+    fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise OnboardingError('conversation_launcher_selection_busy') from exc
+        if destination.is_symlink():
+            current = destination.readlink()
+            if current == source:
+                return
+            if previous is None or current != previous or destination.lstat().st_uid != os.geteuid():
+                raise OnboardingError('existing_guest_codex_preserved')
+            with tempfile.TemporaryDirectory(prefix='.codex-launcher-', dir=destination.parent) as tmp:
+                candidate = Path(tmp) / 'codex'
+                candidate.symlink_to(source)
+                if not destination.is_symlink() or destination.readlink() != previous:
+                    raise OnboardingError('existing_guest_codex_preserved')
+                os.replace(candidate, destination)
+                os.fsync(fd)
+            return
+        if destination.exists() or previous is not None:
             raise OnboardingError('existing_guest_codex_preserved')
-        return
-    if destination.exists():
-        raise OnboardingError('existing_guest_codex_preserved')
-    # symlink() is atomic and refuses any concurrent differing installation.
-    destination.symlink_to(source)
+        destination.symlink_to(source)
+    finally:
+        os.close(fd)
 
 
 def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):

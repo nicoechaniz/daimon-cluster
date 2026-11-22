@@ -133,7 +133,9 @@ document binds each workload and candidate to a receiver, route, family and
 owner-supplied compatibility contract digest. The adapter provides explicit
 three-part release ordering and current availability with its UTC epoch-second
 observation time. Entries more than 24 hours old or from the future are ignored.
-A qualification must name the exact current model. Ties require resolution.
+A qualification must name the exact current model and receiving revision and
+carry its own fresh observation timestamp. Refreshing availability does not
+refresh qualification. Ties require resolution.
 The pass emits `model_upgrades` plus stable semantic states. It makes no provider
 calls and cannot apply a model selection by itself.
 

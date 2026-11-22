@@ -264,7 +264,10 @@ def run_pass(config, *, run=command):
                 result["semantic"]["model_upgrades"] = "evidence-unavailable"
             else:
                 for key, item in result["model_upgrades"].items():
-                    result["semantic"]["model:" + key] = item
+                    result["semantic"]["model:" + key] = {
+                        field: item[field] for field in ("current", "candidate", "state")
+                        if field in item
+                    }
         dispatches = 0
         for t in config["targets"]:
             if time.monotonic() - started > 210:

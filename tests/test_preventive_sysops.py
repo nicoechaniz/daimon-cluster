@@ -150,10 +150,11 @@ class Sysops(unittest.TestCase):
     def test_model_family_observation_does_not_dispatch(self):
         now = int(time.time())
         fixed = dict(target="own", route="native-review", family="sol", contract="a" * 64)
+        proof = dict(previous_model="gpt-6.1-sol", previous_revision="b" * 64, observed_at=now)
         candidate = dict(**fixed, model="gpt-6.2-sol", version=[6, 2, 0],
-                         available=True, qualified_from="gpt-6.1-sol", observed_at=now)
+                         available=True, qualification=proof, observed_at=now)
         workload = dict(**fixed, id="review", current="gpt-6.1-sol",
-                        current_version=[6, 1, 0], follow=True, candidates=[
+                        current_version=[6, 1, 0], current_revision="b" * 64, follow=True, candidates=[
                             candidate,
                             dict(candidate, model="gpt-6.3-sol", version=[6, 3, 0], observed_at=now - 90000),
                             dict(candidate, model="gpt-6.4-sol", version=[6, 4, 0], route="other-account"),
@@ -167,6 +168,9 @@ class Sysops(unittest.TestCase):
         for changes, expected in (
             ({}, "qualified-for-owner-apply"),
             ({"follow": False}, "pinned"),
+            ({"current_revision": "c" * 64}, "qualification-required"),
+            ({"candidates": [dict(candidate, qualification=dict(proof, observed_at=now - 90000))]},
+             "qualification-required"),
             ({"current": "gpt-6-sol", "current_version": [6, 0, 0]}, "qualification-required"),
             ({"candidates": [candidate, dict(candidate, model="gpt-6.2-sol-alias")]}, "ambiguous-release"),
         ):
@@ -176,6 +180,7 @@ class Sysops(unittest.TestCase):
                 result = s.run_pass(self.config, run=self.command)
                 self.assertEqual(result["model_upgrades"]["own:review"]["state"], expected)
                 self.assertEqual(result["models_started"], 0)
+                self.assertNotIn("current_revision", result["semantic"]["model:own:review"])
         self.assertFalse(any("start" in argv for argv in self.calls))
         evidence.chmod(0o644)
         result = s.run_pass(self.config, run=self.command)

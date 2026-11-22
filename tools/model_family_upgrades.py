@@ -25,6 +25,10 @@ def identifier(value):
     return isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,95}", value)
 
 
+def fingerprint(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+
+
 def version(value):
     if not isinstance(value, list) or len(value) != 3 or any(
         type(part) is not int or not 0 <= part <= 999 for part in value
@@ -49,11 +53,11 @@ def plan(document, targets):
         if (
             not isinstance(workload, dict)
             or set(workload) != {"id", "target", "route", "contract", "family", "follow",
-                                  "current", "current_version", "candidates"}
+                                  "current", "current_version", "current_revision", "candidates"}
             or not all(identifier(workload[k]) for k in ("id", "target", "route", "family", "current"))
             or workload["target"] not in targets
-            or not isinstance(workload["contract"], str)
-            or not re.fullmatch(r"[0-9a-f]{64}", workload["contract"])
+            or not fingerprint(workload["contract"])
+            or not fingerprint(workload["current_revision"])
             or type(workload["follow"]) is not bool
             or not isinstance(workload["candidates"], list)
             or len(workload["candidates"]) > 16
@@ -69,17 +73,23 @@ def plan(document, targets):
             if (
                 not isinstance(candidate, dict)
                 or set(candidate) != {"model", "version", "target", "route", "contract",
-                                       "family", "available", "qualified_from", "observed_at"}
+                                       "family", "available", "qualification", "observed_at"}
                 or not all(identifier(candidate[k]) for k in ("model", "target", "route", "family"))
-                or not isinstance(candidate["contract"], str)
-                or not re.fullmatch(r"[0-9a-f]{64}", candidate["contract"])
+                or not fingerprint(candidate["contract"])
                 or type(candidate["available"]) is not bool
                 or type(candidate["observed_at"]) is not int
-                or candidate["qualified_from"] is not None
-                and not identifier(candidate["qualified_from"])
                 or candidate["model"] in seen
             ):
                 raise ValueError("invalid_model_candidate_evidence")
+            proof = candidate["qualification"]
+            if proof is not None and (
+                not isinstance(proof, dict)
+                or set(proof) != {"previous_model", "previous_revision", "observed_at"}
+                or not identifier(proof["previous_model"])
+                or not fingerprint(proof["previous_revision"])
+                or type(proof["observed_at"]) is not int
+            ):
+                raise ValueError("invalid_model_qualification_evidence")
             seen.add(candidate["model"])
             release = version(candidate["version"])
             if (
@@ -90,7 +100,7 @@ def plan(document, targets):
                 and all(candidate[k] == workload[k] for k in ("target", "route", "contract", "family"))
             ):
                 eligible.append((release, candidate))
-        item = {"current": workload["current"], "state": "pinned"}
+        item = {"current": workload["current"], "current_revision": workload["current_revision"], "state": "pinned"}
         if workload["follow"]:
             item["state"] = "no-compatible-successor"
             if eligible:
@@ -101,9 +111,13 @@ def plan(document, targets):
                 else:
                     candidate = choices[0]
                     item["candidate"] = candidate["model"]
+                    proof = candidate["qualification"]
                     item["state"] = (
                         "qualified-for-owner-apply"
-                        if candidate["qualified_from"] == workload["current"]
+                        if proof is not None
+                        and proof["previous_model"] == workload["current"]
+                        and proof["previous_revision"] == workload["current_revision"]
+                        and 0 <= checked_at - proof["observed_at"] <= MAX_AGE_SECONDS
                         else "qualification-required"
                     )
         result[key] = item

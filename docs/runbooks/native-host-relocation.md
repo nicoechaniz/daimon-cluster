@@ -475,6 +475,32 @@ the adapter and placement are actually adopted, that receiver remains an explici
 maintenance gap; source code alone is not fleet update convergence. This transport
 does not change Matrix identity, signed authority or message semantics.
 
+## Aligning a managed Codex CLI launcher with its native package
+
+The installed app-server and the public Codex launcher can select separate
+packages after native maintenance. Read the running daemon's actual executable
+and its selected package before qualifying a change. An ephemeral inference
+check must use that same package and the receiver's own Codex home. Equal version
+strings alone do not identify an equal build.
+
+For an already admitted guest, stage the complete qualified successor as an
+administrator-owned immutable Conversation bundle with its pinned manifest. Read
+the exact predecessor bundle and its pin from the owning deployment record.
+Use the existing `onboarding_conversation_bundle.bootstrap_codex` selector with
+the successor root and fingerprint and `previous_selection=(old_root, old_pin)`.
+This mode validates both public bundles and atomically switches the managed
+launcher only when it still points to the verified predecessor. An already
+selected successor is idempotent. An unrelated executable, dangling link beyond
+the selected bundles or untrusted writable ancestor is refused. The owning
+operator can reverse the operation by supplying the two verified generations in
+the opposite order. Keep the predecessor while it is needed by recovery or
+an existing writer.
+
+This changes future launcher invocations. It neither restarts the app-server
+nor re-enrolls the guest. Verify the selected link and executable as the
+consuming UID, then use the existing ready and normal receiving checks. Never
+bind the system launcher to a user-writable daemon package path.
+
 ## Retained operator recovery access
 
 Nicolas reiterated on2026-10-28 that CompAII remains the authorized operator

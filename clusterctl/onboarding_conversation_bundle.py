@@ -5,6 +5,7 @@ memory and mutable App state remain in the receiving body's private home.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import stat
 import importlib.util
 import shutil
 import subprocess
+import tempfile
 import time
 
 from . import being_seed
@@ -326,18 +328,10 @@ def compose_native(app: Path, fingerprint: str, native: Path, output: Path) -> d
                 native_version=metadata['version'], **observed)
 
 
-def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
-                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
-                    state_plan=None):
-    """Expose this selected public executable; never overwrite a guest login/tool."""
+def _qualified_codex(root: Path, fingerprint: str) -> Path:
     verify(root, fingerprint, uid=os.geteuid())
     manifest = json.loads(regular(root / MARKER, uid=os.geteuid(), limit=2 * 1024**2))
     package_root = root / manifest.get('codex_package', '.')
-    if prepare_dependencies:
-        dependencies()
-    if state_plan is not None:
-        from .onboarding_vm_state import install
-        install(*state_plan)
     source = package_root / 'bin/codex'
     # The daemon resolves its sibling package and code-mode host. A lone CLI
     # executable reports its version but cannot start the native server.
@@ -354,14 +348,65 @@ def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
         raise OnboardingError('conversation_bundle_codex_package_required') from None
     if not source.is_file() or not os.access(source, os.X_OK):
         raise OnboardingError('conversation_bundle_codex_required')
-    if destination.is_symlink():
-        if destination.readlink() != source:
+    return source
+
+
+def _public_parent(path: Path) -> None:
+    """A verified child must remain behind an administrator-controlled path."""
+    for parent in (path, *path.parents):
+        info = parent.lstat()
+        trusted_sticky = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid())
+                or (info.st_mode & 0o022 and not trusted_sticky)):
+            raise OnboardingError('conversation_bundle_untrusted_parent')
+
+
+def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
+                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
+                    state_plan=None, previous_selection: tuple[Path, str] | None = None):
+    """Expose a public CLI or conditionally replace its exact managed predecessor."""
+    if previous_selection is not None:
+        if prepare_dependencies or state_plan is not None:
+            raise OnboardingError('conversation_launcher_successor_scope')
+        for path in (root, previous_selection[0], destination.parent):
+            if not path.is_absolute() or '..' in path.parts:
+                raise OnboardingError('conversation_bundle_untrusted_parent')
+            _public_parent(path)
+
+    source = _qualified_codex(root, fingerprint)
+    previous = _qualified_codex(*previous_selection) if previous_selection is not None else None
+    if prepare_dependencies:
+        dependencies()
+    if state_plan is not None:
+        from .onboarding_vm_state import install
+        install(*state_plan)
+
+    # Serialize this selector's writers without a persistent sidecar.
+    fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise OnboardingError('conversation_launcher_selection_busy') from exc
+        if destination.is_symlink():
+            current = destination.readlink()
+            if current == source:
+                return
+            if previous is None or current != previous or destination.lstat().st_uid != os.geteuid():
+                raise OnboardingError('existing_guest_codex_preserved')
+            with tempfile.TemporaryDirectory(prefix='.codex-launcher-', dir=destination.parent) as tmp:
+                candidate = Path(tmp) / 'codex'
+                candidate.symlink_to(source)
+                if not destination.is_symlink() or destination.readlink() != previous:
+                    raise OnboardingError('existing_guest_codex_preserved')
+                os.replace(candidate, destination)
+                os.fsync(fd)
+            return
+        if destination.exists() or previous is not None:
             raise OnboardingError('existing_guest_codex_preserved')
-        return
-    if destination.exists():
-        raise OnboardingError('existing_guest_codex_preserved')
-    # symlink() is atomic and refuses any concurrent differing installation.
-    destination.symlink_to(source)
+        destination.symlink_to(source)
+    finally:
+        os.close(fd)
 
 
 def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):

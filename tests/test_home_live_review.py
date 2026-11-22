@@ -69,9 +69,9 @@ function target(){const listeners=new Map();return {listeners,
  count(){return [...listeners.values()].reduce((n,set)=>n+set.size,0)}}}
 const host=target(),doc={...target(),hidden:false},messages=[],frame={...target(),dataset:{},
  contentWindow:{postMessage:message=>messages.push(message)},setAttribute(name,value){this[name]=value},removeAttribute(name){delete this[name]}};
-let requests=0;
+const requests=[];
 const context={window:host,document:doc,URL,TextEncoder,AbortController,Uint8Array,TextDecoder,
- setTimeout,clearTimeout,fetch:async()=>{requests++;throw Error('No automatic fetch expected')}};
+ setTimeout,clearTimeout,fetch:async url=>{requests.push(url);throw Error('Fixture stops after first request')}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
 const descriptor={schema:'dm.home-review-source/v1',resource:'a'.repeat(32),version:'b'.repeat(64),
  content_origin:'https://content.example',frame:{src:'https://content.example/r/'+'t'.repeat(43)+'/index.html',sandbox:'allow-scripts'},
@@ -83,7 +83,11 @@ assert.equal(messages.at(-1).resource,'a'.repeat(32),'caller mutation cannot cha
 assert.equal(messages.at(-1).reviewContext,true);assert.equal(messages.at(-1).liveReview,false);
 host.emit('message',{source:frame.contentWindow,origin:'null',data:{type:'home-artifact:review-select',resource:'f'.repeat(32)}});
 host.emit('message',{source:frame.contentWindow,origin:'null',data:{type:'home-artifact:live-review',enabled:true}});
-assert.equal(requests,0,'pinned mode cannot switch resource or start current-version polling');
+assert.equal(requests.length,0,'pinned mode cannot switch resource or start current-version polling');
+host.emit('message',{source:frame.contentWindow,origin:'https://content.example',data:{type:'home-artifact:review-load-pinned'}});
+assert.equal(requests.length,0,'only the opaque child can start hydration');
+host.emit('message',{source:frame.contentWindow,origin:'null',data:{type:'home-artifact:review-load-pinned'}});
+assert.deepEqual(requests,['/access/review-source/'+'a'.repeat(32)+'/'+'b'.repeat(64)+'/assets/'+'t'.repeat(43)+'/review-live.json']);
 assert.throws(()=>api.mountPinned(frame,descriptor),/already mounted/);
 mount.dispose();mount.dispose();assert.equal(host.count()+doc.count()+frame.count(),0);assert.equal(frame.src,undefined);
 for(const mutate of [s=>s.version='current',s=>s.frame.sandbox='allow-scripts allow-same-origin',

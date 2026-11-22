@@ -381,7 +381,12 @@ The isolated ticket reads only the selected files from the registered backend
 and revision. The gateway checks the source audience on each request. A foreign
 frame can be embedded only by the exact parent session origin. Existing
 session expiration, ancestry, logout and actor revocation invalidate its
-ticket. The existing parent handshake remains required.
+ticket. The trusted parent hydrates using the same-origin
+`/access/review-source/<resource>/<immutable-version>/assets/<ticket>/<file>`
+route derived by `DaimonHomeReview.mountPinned`. The gateway rechecks the same
+lease, parent session, source and audience before returning selected JSON. Keep
+the application's connection policy same-origin and its iframe isolated. The
+existing parent handshake remains required.
 
 The owner-local `check-review-access` keeps the same request and response.
 A foreign decision additionally requires that the authenticated operator can

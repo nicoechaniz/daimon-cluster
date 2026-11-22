@@ -23,6 +23,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, quote, unquote, urlsplit, urlencode
 
+from clusterd.auth import hash_token
+
 from .authority import NativeAuthority
 from .policy import Policy, validate_audience
 from .registry import Registry
@@ -720,6 +722,46 @@ def review_source(app, home, reference, version, subject, vpn, *, origin, parent
             'adapter_handshake': 'required'}
 
 
+def review_asset(app, home, reference, version, ticket, filename, subject, vpn, *, origin, parent_token):
+    """Read only hydration JSON through the exact issued frame context."""
+    if filename == "review-live.json":
+        limit = 16 * 1024
+    elif filename == "scene-index.json":
+        limit = 256 * 1024
+    elif filename == "gallery.json" or re.fullmatch(r"scene-[0-9]{3}\.json", filename):
+        limit = 25 * 1024 * 1024
+    else:
+        raise ValueError("review_asset_unavailable")
+    source = app.review_home(reference)
+    if source is None:
+        raise ValueError("review_asset_unavailable")
+    source_vpn = vpn and source == home
+    origin_key = "content_vpn_url" if source_vpn else "content_public_url"
+    row = app.sessions.resolve_content(ticket, content_origin=app.config[origin_key].rstrip("/"))
+    if not row or (row["home"], row["resource"], row["version"]) != (source, reference, version):
+        raise ValueError("review_asset_unavailable")
+    if row["parent"]:
+        if (
+            not subject or not parent_token
+            or not hmac.compare_digest(row["parent"], hash_token(parent_token))
+            or (row["parent_home"], row["parent_origin"]) != (home, origin)
+            or (row["actor"], row["revision"]) != (subject.ref, subject.revision)
+        ):
+            raise ValueError("review_asset_unavailable")
+    elif subject or source != home:
+        raise ValueError("review_asset_unavailable")
+    selected = app.selected(source, reference, version, subject, source_vpn)
+    if not selected or selected["kind"] != "artifact" or filename not in selected["files"]:
+        raise ValueError("review_asset_unavailable")
+    with app.backends[source].open(f"/_home/artifact/{reference}/{version}/{filename}") as response:
+        if response.status != 200 or response.headers.get("X-Home-Version") != version:
+            raise ValueError("review_asset_unavailable")
+        body = response.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("review_asset_too_large")
+    return body
+
+
 def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details"):
     if display_mode not in ("details", "work"):
         raise ValueError("invalid_display_mode")
@@ -1093,11 +1135,27 @@ def handler(app, *, owner=False):
                     )
                 elif path.startswith('/access/review-source/'):
                     parts = path.removeprefix('/access/review-source/').split('/')
-                    if len(parts) != 2 or urlsplit(self.path).query:
+                    if urlsplit(self.path).query:
                         raise ValueError('invalid_review_source_route')
-                    self.respond(200, review_source(
-                        app, home, parts[0], parts[1], subject, vpn,
-                        origin=origin, parent_token=parent_token))
+                    if len(parts) == 2:
+                        self.respond(200, review_source(
+                            app, home, parts[0], parts[1], subject, vpn,
+                            origin=origin, parent_token=parent_token))
+                    elif len(parts) == 5 and parts[2] == 'assets' and self.command == 'GET':
+                        reference, version, _, ticket, filename = parts
+                        if (
+                            not re.fullmatch('[a-f0-9]{32}', reference)
+                            or not re.fullmatch('[a-f0-9]{64}', version)
+                            or self.headers.get('Origin') not in (None, origin)
+                        ):
+                            raise ValueError('invalid_review_asset_route')
+                        body = review_asset(
+                            app, home, reference, version, ticket, filename, subject, vpn,
+                            origin=origin, parent_token=parent_token)
+                        self.respond(200, body, "application/json; charset=utf-8",
+                                     headers=(("X-Home-Version", version),))
+                    else:
+                        raise ValueError('invalid_review_source_route')
                 elif path.startswith("/view/"):
                     reference = path.removeprefix("/view/")
                     if not re.fullmatch("[a-f0-9]{32}", reference):

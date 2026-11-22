@@ -228,6 +228,13 @@ class Registry:
             ).fetchone()
             return row[0] if row else 0
 
+    def resource_owner(self, reference):
+        """Return the immutable registered Home and owner for one resource."""
+        with closing(self.sessions.connect()) as db:
+            return db.execute(
+                "SELECT home, owner FROM resources WHERE ref=?", (reference,)
+            ).fetchone()
+
     def version(self, *, home, resource, version):
         with closing(self.sessions.connect()) as db:
             row = db.execute(

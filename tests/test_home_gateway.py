@@ -7,6 +7,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -278,6 +279,7 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
     ]
     # Private model discovery must use the same filtered projection as reads.
     entries[3]["files"].extend(["gallery.json", "review-live.json"])
+    entries[3]["recipients"].append("owner-two")
     entries[3]["version_ref"] = version_digest(entries[3])
     media_file = "media/" + "e" * 64 + ".wav"
     entries[0]["files"].append(media_file)
@@ -327,8 +329,12 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             "vpn_url": "https://private-one.example",
             "name": "Home",
         }
+        receiving = {**home, "backend": None, "owner_being_ref": "owner-two",
+                     "owner_token_file": key(tmp_path, "owner-two", "second-owner"),
+                     "public_url": "https://two.example", "vpn_url": "https://private-two.example"}
         app = Application(
-            {"homes": {"one": home}, "content_public_url": "https://content.example", "content_vpn_url": "https://private-content.example"}, authority, Sessions(tmp_path / "state")
+            {"homes": {"one": home, "two": receiving}, "content_public_url": "https://content.example",
+             "content_vpn_url": "https://private-content.example"}, authority, Sessions(tmp_path / "state")
         )
         app.owner("one", "home-owner", "sync", {})
         token = app.sessions.issue(
@@ -422,6 +428,31 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
                 app.owner('one', other, 'check-review-access', scope)
             with pytest.raises(ValueError):
                 app.owner('one', 'home-owner', 'check-review-access', {**scope, 'actor_ref': 'human-one', 'url': 'https://other.example'})
+            # Receiving Home differs from the backend recorded for this pin.
+            receiver_headers = {"Host": "two.example", "X-Daimon-Home": "two"}
+            cross_actor = app.sessions.issue(
+                home="two", origin=receiving["public_url"], subject=authority.actor("human-two"))
+            denied_actor = app.sessions.issue(
+                home="two", origin=receiving["public_url"], subject=authority.actor("human-one"))
+            assert get(review, extra=receiver_headers)[0] == 404
+            assert get(review, other, extra=receiver_headers)[0] == 404  # Wrong session origin.
+            assert get(review, denied_actor, extra=receiver_headers)[0] == 404
+            assert app.owner('two', 'second-owner', 'check-review-access', scope)['allowed']
+            assert not app.owner('two', 'second-owner', 'check-review-access', {
+                **scope, 'actor_ref': 'human-one'})['allowed']
+            status, response, _ = get(review, cross_actor, extra=receiver_headers)
+            assert status == 200
+            child = urlsplit(json.loads(response)['frame']['src'])
+            assert child.hostname == 'content.example'
+            content_headers = {'Host': child.hostname}
+            status, body, headers = get(child.path, extra=content_headers)
+            assert status == 200 and body == b"<p>Selected bytes</p>"
+            assert headers['Content-Security-Policy'].endswith('frame-ancestors https://two.example')
+            assert headers['Cache-Control'] == 'no-store'
+            assert get(child.path, extra={'Host': 'private-content.example', 'X-Daimon-Vpn': '1'})[0] == 404
+            assert get('/access/logout', cross_actor, method='POST', extra={
+                **receiver_headers, 'Origin': receiving['public_url'], 'Content-Length': '0'})[0] == 200
+            assert get(child.path, extra=content_headers)[0] == 404
             assert get(review.replace(entries[3]['version_ref'], 'current'), other)[0] == 404
             assert get(review + '?url=https://other.example', other)[0] == 404
             assert get('/access/review-source/' + 'a' * 32 + '/' + entries[0]['version_ref'])[0] == 404

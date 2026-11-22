@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 from tools import preventive_sysops as s
@@ -145,6 +146,41 @@ class Sysops(unittest.TestCase):
         import shlex
 
         self.assertEqual(shlex.split(argv[-1])[-1], 'print("literal $()")')
+
+    def test_model_family_observation_does_not_dispatch(self):
+        now = int(time.time())
+        fixed = dict(target="own", route="native-review", family="sol", contract="a" * 64)
+        candidate = dict(**fixed, model="gpt-6.2-sol", version=[6, 2, 0],
+                         available=True, qualified_from="gpt-6.1-sol", observed_at=now)
+        workload = dict(**fixed, id="review", current="gpt-6.1-sol",
+                        current_version=[6, 1, 0], follow=True, candidates=[
+                            candidate,
+                            dict(candidate, model="gpt-6.3-sol", version=[6, 3, 0], observed_at=now - 90000),
+                            dict(candidate, model="gpt-6.4-sol", version=[6, 4, 0], route="other-account"),
+                            dict(candidate, model="gpt-6.5-astra", version=[6, 5, 0], family="astra"),
+                            dict(candidate, model="gpt-6.6-sol", version=[6, 6, 0], available=False),
+                        ])
+        evidence = Path(self.temp.name) / "models.json"
+        evidence.touch(mode=0o600)
+        self.config["model_evidence"] = str(evidence)
+        self.row["age_seconds"] = 1
+        for changes, expected in (
+            ({}, "qualified-for-owner-apply"),
+            ({"follow": False}, "pinned"),
+            ({"current": "gpt-6-sol", "current_version": [6, 0, 0]}, "qualification-required"),
+            ({"candidates": [candidate, dict(candidate, model="gpt-6.2-sol-alias")]}, "ambiguous-release"),
+        ):
+            with self.subTest(changes=changes):
+                evidence.write_text(json.dumps({"schema": "cluster.model-family-evidence/v1",
+                                                "workloads": [dict(workload, **changes)]}))
+                result = s.run_pass(self.config, run=self.command)
+                self.assertEqual(result["model_upgrades"]["own:review"]["state"], expected)
+                self.assertEqual(result["models_started"], 0)
+        self.assertFalse(any("start" in argv for argv in self.calls))
+        evidence.chmod(0o644)
+        result = s.run_pass(self.config, run=self.command)
+        self.assertEqual(result["semantic"]["model_upgrades"], "evidence-unavailable")
+        self.assertNotIn("model_upgrades", result)
 
     def test_retained_pending_does_not_follow_new_binding(self):
         s.run_pass(self.config, run=self.command)

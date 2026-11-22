@@ -127,6 +127,16 @@ that receiver has a suitable CLI and tool-disabled catalog. This contract is a
 design for existing owner adapters. It does not schedule new polling or imply
 that automatic selection is already installed.
 
+The finite pass accepts an optional absolute `model_evidence` path to an
+operator-owned 0600 file of at most 128 KiB. The `cluster.model-family-evidence/v1`
+document binds each workload and candidate to a receiver, route, family and
+owner-supplied compatibility contract digest. The adapter provides explicit
+three-part release ordering and current availability with its UTC epoch-second
+observation time. Entries more than 24 hours old or from the future are ignored.
+A qualification must name the exact current model. Ties require resolution.
+The pass emits `model_upgrades` plus stable semantic states. It makes no provider
+calls and cannot apply a model selection by itself.
+
 ## Initial receiving evidence —22November2026
 
 The finite pass actually observed all nine selected targets in5.4seconds. Each

@@ -102,8 +102,13 @@ def prepare_selection(config, plan: dict, store, *, authorize) -> None:
         publish(path, raw)
 
 def verify(root: Path, fingerprint: str, *, uid: int):
+    return _verify(root, fingerprint, uid=uid)[0]
+
+
+def _verify(root: Path, fingerprint: str, *, uid: int, legacy_manifest: Path | None = None):
     being_seed._path(root)
-    raw = regular(root / MARKER, uid=uid, limit=2 * 1024**2)
+    raw = regular(legacy_manifest if legacy_manifest is not None else root / MARKER,
+                  uid=uid, limit=2 * 1024**2)
     if hashlib.sha256(raw).hexdigest() != fingerprint:
         raise OnboardingError('conversation_bundle_changed')
     value = json.loads(raw)
@@ -113,6 +118,9 @@ def verify(root: Path, fingerprint: str, *, uid: int):
             or not 1 <= len(value['files']) <= MAX_FILES):
         raise OnboardingError('conversation_bundle_required')
     expected = value['files']
+    if legacy_manifest is not None and (
+            'codex_package' in value or not all(map(_native_component, expected))):
+        raise OnboardingError('conversation_bundle_codex_package_required')
     for name, checksum in expected.items():
         if (relative(name) != name or name == MARKER or not isinstance(checksum, str)
                 or not re.fullmatch('[0-9a-f]{64}', checksum)):
@@ -141,6 +149,8 @@ def verify(root: Path, fingerprint: str, *, uid: int):
                     raise OnboardingError('conversation_bundle_required')
                 name = path.relative_to(root).as_posix()
                 if name == MARKER:
+                    if legacy_manifest is not None:
+                        raise OnboardingError('conversation_bundle_codex_package_required')
                     continue
                 total += info.st_size
                 if total > MAX_BYTES or name not in expected:
@@ -156,7 +166,7 @@ def verify(root: Path, fingerprint: str, *, uid: int):
                 found.add(name)
     if found != set(expected):
         raise OnboardingError('conversation_bundle_changed')
-    return dict(files=len(found), bytes=total)
+    return dict(files=len(found), bytes=total), value
 
 
 def _native_component(name: str) -> bool:
@@ -328,9 +338,8 @@ def compose_native(app: Path, fingerprint: str, native: Path, output: Path) -> d
                 native_version=metadata['version'], **observed)
 
 
-def _qualified_codex(root: Path, fingerprint: str) -> Path:
-    verify(root, fingerprint, uid=os.geteuid())
-    manifest = json.loads(regular(root / MARKER, uid=os.geteuid(), limit=2 * 1024**2))
+def _qualified_codex(root: Path, fingerprint: str, legacy_manifest: Path | None = None) -> Path:
+    _, manifest = _verify(root, fingerprint, uid=os.geteuid(), legacy_manifest=legacy_manifest)
     package_root = root / manifest.get('codex_package', '.')
     source = package_root / 'bin/codex'
     # The daemon resolves its sibling package and code-mode host. A lone CLI
@@ -363,8 +372,13 @@ def _public_parent(path: Path) -> None:
 
 def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
                     destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
-                    state_plan=None, previous_selection: tuple[Path, str] | None = None):
+                    state_plan=None, previous_selection: tuple[Path, str] | None = None,
+                    legacy_selection: tuple[Path, Path] | None = None):
     """Expose a public CLI or conditionally replace its exact managed predecessor."""
+    legacy_root, legacy_manifest = legacy_selection or (None, None)
+    if legacy_selection is not None and (previous_selection is None
+            or root == previous_selection[0] or legacy_root not in (root, previous_selection[0])):
+        raise OnboardingError('conversation_launcher_successor_scope')
     if previous_selection is not None:
         if prepare_dependencies or state_plan is not None:
             raise OnboardingError('conversation_launcher_successor_scope')
@@ -372,9 +386,17 @@ def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
             if not path.is_absolute() or '..' in path.parts:
                 raise OnboardingError('conversation_bundle_untrusted_parent')
             _public_parent(path)
+        if legacy_manifest is not None:
+            if not legacy_manifest.is_absolute() or '..' in legacy_manifest.parts:
+                raise OnboardingError('conversation_bundle_untrusted_parent')
+            _public_parent(legacy_manifest.parent)
 
-    source = _qualified_codex(root, fingerprint)
-    previous = _qualified_codex(*previous_selection) if previous_selection is not None else None
+    source = _qualified_codex(root, fingerprint, legacy_manifest if root == legacy_root else None)
+    previous = None
+    if previous_selection is not None:
+        previous_root, previous_pin = previous_selection
+        previous = _qualified_codex(previous_root, previous_pin,
+                                    legacy_manifest if previous_root == legacy_root else None)
     if prepare_dependencies:
         dependencies()
     if state_plan is not None:

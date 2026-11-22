@@ -126,6 +126,30 @@ def test_own_codex_is_exposed_idempotently_and_foreign_guest_executable_survives
     bundle.bootstrap_codex(pin, root=root, destination=destination, previous_selection=(successor,new_pin))
     assert destination.readlink() == binary
     assert binary.read_bytes() == b'qualified binary'
+
+    legacy_manifest = tmp_path/'legacy-manifest.json'
+    (root/bundle.MARKER).rename(legacy_manifest)
+    legacy_selection = (root, legacy_manifest)
+    with pytest.raises(OnboardingError, match='conversation_bundle_changed'):
+        bundle.bootstrap_codex(new_pin, root=successor, destination=destination,
+                              previous_selection=(root,'0'*64), legacy_selection=legacy_selection)
+    assert destination.readlink() == binary
+    bundle.bootstrap_codex(new_pin, root=successor, destination=destination,
+                          previous_selection=(root,pin), legacy_selection=legacy_selection)
+    assert destination.readlink() == candidate
+    bundle.bootstrap_codex(pin, root=root, destination=destination,
+                          previous_selection=(successor,new_pin), legacy_selection=legacy_selection)
+    assert destination.readlink() == binary
+    assert not (root/bundle.MARKER).exists()
+
+    (root/'extra').write_bytes(b'unlisted file')
+    (root/'extra').chmod(0o644)
+    with pytest.raises(OnboardingError, match='conversation_bundle_capacity'):
+        bundle.bootstrap_codex(new_pin, root=successor, destination=destination,
+                              previous_selection=(root,pin), legacy_selection=legacy_selection)
+    assert destination.readlink() == binary
+    (root/'extra').unlink()
+    legacy_manifest.rename(root/bundle.MARKER)
     destination.unlink()
     destination.symlink_to(tmp_path / 'unexpected')
     with pytest.raises(OnboardingError, match='existing_guest_codex_preserved'):

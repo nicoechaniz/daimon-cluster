@@ -496,6 +496,20 @@ operator can reverse the operation by supplying the two verified generations in
 the opposite order. Keep the predecessor while it is needed by recovery or
 an existing writer.
 
+Some older hosts installed only the public Codex closure directly under
+`/opt`. For a managed legacy predecessor, project its native file map from
+the independently verified release manifest. Store the projected manifest
+outside the legacy tree in an administrator-controlled directory and retain
+its SHA256. Supply `legacy_selection=(legacy_root, manifest_path)` alongside
+the ordinary pin for that generation. The same selection applies in reverse
+for rollback. Cluster verifies the complete native file map and keeps the
+legacy installation intact. A checksum captured solely from the receiving
+host does not establish the publisher's release.
+
+For recursive Incus delivery of a verified administrator-owned public tree,
+use the maintained recursive file transport and verify ownership and digests
+in the guest. Incus rejects explicit UID/GID flags together with recursive mode.
+
 This changes future launcher invocations. It neither restarts the app-server
 nor re-enrolls the guest. Verify the selected link and executable as the
 consuming UID, then use the existing ready and normal receiving checks. Never

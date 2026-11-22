@@ -16,6 +16,12 @@ from clusterctl import being_seed, onboarding_release
 from clusterctl.onboarding_service import publish
 
 UNIT = 'daimon-onboarding-worker.service'
+PREFLIGHT = (
+    'from clusterctl import onboarding_worker, onboarding_host, onboarding_homes, '
+    'onboarding_conversation, onboarding_conversation_proxy, onboarding_conversation_routes, onboarding_membership_intent, '
+    'onboarding_conversation_maintenance, onboarding_membership_preparation, onboarding_membership_collection, onboarding_group_coordinator, onboarding_receive_flow, onboarding_companion_homes; '
+    'from clusterctl.matrix_host import _matrix_api; _matrix_api()'
+)
 
 
 def install_unit(directory: Path, candidate: bytes, *, previous_sha256: str | None = None) -> bool:
@@ -102,7 +108,7 @@ def main(argv=None) -> int:
         HostConfig.load(args.config)
         # Verify the selected installation, never another checkout's SDK.
         result = subprocess.run([str(args.release / 'venv/bin/python'), '-c',
-            'from clusterctl.matrix_host import _matrix_api; _matrix_api()'],
+            PREFLIGHT],
             cwd=args.release, capture_output=True, timeout=30, check=False)
         if result.returncode:
             raise OnboardingError('qualified_worker_release_required')

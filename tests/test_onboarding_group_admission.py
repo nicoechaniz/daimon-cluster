@@ -495,6 +495,13 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
         completed = journal.get(row['operation_id'])
         assert completed['state'] == 'completed' and completed['result'] == result
         assert finish_membership_only(journal, completed, result) == result
+        from clusterctl.onboarding_group_coordinator import GroupCoordinator
+        coordinator = object.__new__(GroupCoordinator)
+        monkeypatch.setattr(coordinator, '_binding', lambda selected: (journal, completed, {}))
+        monkeypatch.setattr(coordinator, 'observe', lambda selected: pytest.fail('outbound pipeline'))
+        observed = coordinator.observe_membership({})
+        assert observed.state == 'complete'
+        assert observed.facts == {'tribe_membership_verified': True}
         assert len(calls) == before_completion, 'completion and its retry must not reopen native writers'
         following = plan_update(journal, manifest_digest=digest({'next': result['operation_id']}),
             target=row['target'], expected_precondition={'members': 'actual-successor'},

@@ -1085,9 +1085,12 @@ root. Existing body startup, lifecycle, SDK/authority and native catalogue evide
 remain independent and valid. The regular Target route remains available. Do not
 repeat its full running/admission qualification inside a control when that same
 bounded all-reader round already authenticated the process and parent. On an
-uncertain result retain the exact request and native CAS; never mint another
-positive request or widen the observation budget. Empty-clear authorization
-recovery is a separately reviewed negative-only operation, not a renewal policy.
+uncertain result retain the original request and native CAS. The owner-local
+reader-control authentication renewal described below may create another
+transport envelope for the identical command after fresh same-process/head
+observation; it does not create another positive semantic operation or widen
+its observation/authorization budget. Empty-clear authorization recovery stays
+a separate negative-only operation.
 
 Prepare expiring fixture controls immediately before their use. If an unrelated
 urgent repair intervenes, preserve the scenario and completed effects instead
@@ -1389,17 +1392,29 @@ its native authentication window before its first dispatch; do not increase that
 window or regenerate an uncertain request to conceal the delay.
 
 A truncated response alone does not establish a daemon exit. Check the actual
-service/process and parent supervision outcome first. For a retained local RPC
-whose authentication aged before admission, inspect its exact client/request ID
-in the current canonical native request journal, using a read-only connection
-and verifying the ledger identity. Absence proves non-admission only when that
-journal retains all admitted requests; a missing response file is insufficient.
-After proven non-admission, preserve the original prepared bytes and use the
-existing client preparation API with the SAME request ID, method and parameters
-to refresh authentication. Prepare and send in one owner process, then retain
-the response. Do not change the authentication window, capability or semantic
-operation. An admitted or uncertain request keeps its original recovery path;
-this is not permission to replay model/provider input or an uncertain effect.
+service/process and parent supervision outcome first. For native
+`runtime.reader-selection` controls, use the maintained owner executor's bounded
+authentication renewal. It preserves the exact command, process instance,
+expected head, operation/release/reader vector, capability and native effect
+horizon. Try exact native recovery first, including an admitted but pending RPC. Only
+a stale failed exchange reaches fresh authenticated same-process/selection/gate
+proof; fresh failures retain their uncertainty without an automatic retry. The
+held client can then prepare a distinct RPC envelope around that same native CAS. At most one envelope changes the gate; a late old envelope's
+actual accepted hash is recovered from the protected history. Original/new bytes
+are durable before the active-envelope pointer changes. The per-control private
+history is limited to16 envelopes/2MiB, with the original active file and atomic
+staging bounded to8MiB total. Exact accepted recovery remains available at
+capacity. Do not discard unfinished or referenced history. This removes manual
+canonical-ledger absence inspection for this CAS method only; another envelope
+is not another semantic operation and does not renew frozen authorization.
+
+For other local RPCs, retain the original admitted/uncertain recovery. A request
+known never admitted may be refreshed only after read-only exact client/request
+journal inspection verifies ledger identity and retained complete admission
+history. Preserve the original bytes and follow that method's supported recovery;
+a missing response file is insufficient. No authentication-window increase,
+capability change, model/provider input replay or uncertain effect duplication
+is authorized by either path.
 
 For an explicitly selected, already prepared qualified guest candidate, status,
 identity and control calls enter its existing closed SDK interpreter directly.
@@ -2096,6 +2111,86 @@ a cold receiver can still be loading. Observe its actual child/listeners and the
 qualify the current reader. Preserve any exhausted-start-limit refusal; after the
 completed publication is verified, clear that unit's failed state and start the
 same supported unit. Never substitute a global Stop or replay message input.
+
+## Existing publication destination changes
+
+The existing owner `group-publication` action `visibility-publish` accepts the
+optional `replacement_configuration` already supported by the selected Matrix
+SDK. Keep `initial_configuration=None` and the exact current
+`expected_installation_sha256`; pass only the SDK's accepted destination and
+publication backend. Reuse genuine current participant disclosures/bindings and
+the ordinary owner writer, journal, selection and receiving-reader route.
+The existing SDK verifies the predecessor, signatures, key preservation and
+backend identity; Cluster does not reconstruct or bypass them. Older requests
+without this field retain their existing behavior. This is a future-message
+policy change, not reenrollment or recovery of ambiguous historical publication.
+
+Inspect the actual paired-human `matrix publication status` descriptor first.
+An installed App publisher does not mean Matrix has selected that destination.
+Keep current native work, accounts, lane choices and original uncertain effects.
+
+## Codex retained attention context
+
+The current qualified Codex profile uses internal, attributed tool outputs for
+heartbeat and delegated work. App's `retain: true` marker requires the native
+`features.retain_client_tool_outputs = true` setting. The inspected Core exposes
+this supported feature as under development and disabled by default. Without
+its effective enablement, marked internal context is not retained by the remote
+compaction path; a completed native turn is still not a useful peer response.
+
+Include the setting in the existing Codex receiving profile, before selecting
+Messaging. For an existing body, use its authenticated `config/read` user-layer
+version and `config/batchWrite` with only that feature key, `upsert`, and
+`reloadUserConfig: true`. Inspect the retained operation after a lost ACK instead
+of repeating it. Confirm effective enablement with `experimentalFeature/list`,
+including a loaded thread when one exists; do not load a thread for the check.
+Use the body's actual native home/owner route, not another body's configuration.
+This needs no Core restart, goal pause/resume, account/model change or model turn.
+Keep native memory generation disabled and preserve later human choices.
+
+All seven current bodies have effective enablement verified, with existing Core
+PIDs, unrelated configuration and heartbeat controls preserved. This changes no
+retention budget: marked outputs share Core's existing64k-token retained-message
+budget and can still be dropped at that bound. Original source journals remain
+authoritative. Future receiving profiles must carry this setting; no new
+heartbeat timer, automatic retry or replacement memory store is required.
+
+Configuration repair is not behavioral acceptance. Qualify an actual useful
+source/action/correlated-response journey that survives compaction. Preserve
+already attempted originals and uncertain responses; do not replay work or
+publish another being's private native answer as if it were a signed peer reply.
+
+
+## Existing OS user manager for selected foreground work
+
+The Matrix foreground scope operator can inspect, adjust and stop a selected own
+bounded task through its actual systemd user manager. Reuse the
+[owning Matrix route](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/runbooks/native-near.md#own-foreground-realm-work-controls);
+this adds no Cluster command executor or scheduler. The owning user must match
+the current body; a signed body read alone grants no resource modification.
+
+For a selected UID1000/agent profile whose manager is unavailable, attach
+`user@1000.service` to its current native service's existing wants directory.
+This persists the ordinary OS control route after boot without changing pinned
+native unit bytes. It is an optional parallel `Wants`, not `Requires` or a
+Conversation/Telegram admission gate. No
+login credential, provider account, native goal or recurring Matrix producer is
+changed. Preserve any later explicit host policy. Other account layouts require
+their actual owner binding rather than copying this receiving profile.
+
+For an existing affected profile, use the ordinary systemd owner operation
+`systemctl add-wants SELECTED_NATIVE_SERVICE user@1000.service`, reload systemd
+metadata, then start only that existing OS manager if inactive. Inspect existing
+user default-unit selections before starting it; do not wake an enabled model
+or revive an archived body. Verify its own user-bus read plus unchanged native
+service/Core identity. Do not restart the current Conversation or Codex to add
+the dependency. An already available manager needs no additional operation.
+
+ITACA and all four current children already had available managers. Oliva and
+Eko had the packaged units installed but inactive with no user bus; the scoped
+existing-manager bring-up passed while preserving their actual native service
+and Core PID files. Installed operator, current manager availability, exact
+selected task effects and model uptake remain distinct receiving observations.
 
 ### Status-only maintenance observers
 

@@ -70,6 +70,11 @@ The receiver's read uses both cursors:
 telecodex --control "$RECEIVER_CONFIG" presentation list 0 0
 ```
 
+Keep both cursors in that command. The CLI prints an owner-control envelope:
+require `ok: true` and `result.schema == "telecodex.presentation-list/v1"`.
+A bare `presentation list` is refused even when the receiver is healthy; it
+does not mean the body should be restarted or its own conversation primed.
+
 A newly started service may report active before its control socket exists.
 Use one finite readiness deadline and retry only the read against that same
 process while the socket appears. Keep the original failed probe and inspect
@@ -82,6 +87,72 @@ own prior task threads independently. Shared Home registration/login, native
 engine readiness, canonical Matrix running admission, Tribe membership and human
 device acceptance retain distinct evidence. Full social admission, a publication
 broker, Escuela, Drive and voice workshops do not gate basic Conversation.
+
+## Reusable guest Conversation adapter
+
+`clusterctl.onboarding_conversation` replaces the pair-specific receiver/web
+bootstrap scripts. The receiving-code builder includes it. Invoke it through
+the existing protected body executor, with one root-owned private request and
+an overall `--timeout-seconds` of1–180 (default120). Without `--apply` it only
+observes. `--apply` first observes an already-ready selection and returns without
+writing configuration, reloading systemd or starting anything. This is one guest
+adapter for the required full host command, not completion of that operator.
+
+The closed `cluster-conversation-bootstrap/v1` request selects the original
+name/plan digest/being, exact registered Home/human/application/origin, allocated
+local human/chat/topic integers, web port, own `execution` profile and qualified
+runtime. `execution.sandbox` and `execution.approval` must match the current own
+Codex configuration; bootstrap never substitutes a more permissive default. Runtime fields
+are `binary`/`binary_sha256`, `python`/`python_sha256`, `web`, ordered
+`pythonpath`, `node_required` and `components`. Each component supplies its root,
+manifest and exact manifest SHA. The component manifest is
+`cluster-conversation-component/v1` with a relative-path-to-SHA `files` map;
+keep it outside that component's source tree. The host derives it from the
+selected public package, never an untrusted child's claim. Four components,
+4096files/96MiB total, 8192directory entries/component and1MiB manifests bound
+reads; binary/interpreter reads are capped64MiB. Symlinks, extra files and changed
+bytes are refused. A venv interpreter may resolve to the root-owned system image.
+
+For public executable/code transfer with Incus, explicitly select `file push
+--uid 0 --gid 0`; its default preserves the transfer user's ownership. Verify the
+qualified digest and root ownership before selection, then verify source reads
+as the actual guest service user. Public directories must allow that user's
+traversal even when the staging operator uses umask0077. Do not change ownership
+or permissions of credentials, histories, actor documents or other private state.
+
+The accepted context must match the original plan. The actual own Home owner
+lookup must return the selected being, Home and human. The existing own Codex
+daemon must answer its metadata command and the selected App reader's
+initialize-only shared-proxy check. No new thread, `thread/loaded/list`, input,
+model execution, provider-account change or Telegram setup is requested. Selected
+Node20+ is checked when the workshop requires it; dependency installation belongs
+to the existing package/image phase of the full host command.
+
+Fresh configurations enable the shared native server and disable Telegram and
+background maintenance. They keep the own Codex home/workspace and select only
+that exact human's shared login. Artifact/workspace/admin access is not expanded.
+The agent PATH includes its installed local tools, while root control never
+searches an agent-writable PATH. Existing additional private settings are
+preserved; differing required settings or unit bytes need the supported update
+path, not destructive bootstrap replacement. Existing inactive units are not
+implicitly resumed. There is no stop/restart operation in this adapter.
+
+A single private, locked64KiB journal in the existing guest preserves the request
+hash and original absent-unit observations. Write-ahead start intentions precede
+systemd. After lost acknowledgment, observe the same process and continue only
+the missing service; absent/uncertain started processes are not blindly started
+again. Readiness waits on the same live process within the original deadline.
+Bounded CLI capture limits combined stdout/stderr to256KiB while reading and caps
+each command at15seconds or remaining time. A timed-out control process does not
+imply its systemd job was canceled. Keep the exact receipt and repair forward.
+
+Success proves selected native control, same local web/own configuration and
+anonymous denial for both Conversation access and administration. The host must
+still verify HTTPS proxy routing and real own/foreign shared browser access.
+An entry URL returned by the guest is intended routing, not a family sign-in or
+first model response. Keep family/device acceptance and the App's retained School
+mission entry/return/display distinct. The full original goal and later joint
+next-companion timing hold remain unchanged.
 
 ## Outbound visibility remains separate from admission
 

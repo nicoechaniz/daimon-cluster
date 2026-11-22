@@ -903,6 +903,18 @@ def test_explicit_membership_only_intent_skips_publication_pipeline(fixture, mon
     assert f.body['registered'] is False
 
 
+def test_web_job_does_not_enter_pending_legacy_outbound_transaction(fixture, monkeypatch):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    f = fixture
+    coordinator = GroupCoordinator(f.backend)
+    plan = {**f.plans['newcomer'], 'schema': CONVERSATION_PLAN_SCHEMA}
+    monkeypatch.setattr(coordinator.store, '_load', lambda name: {'stage': 'matrix', 'plan': plan})
+    monkeypatch.setattr(coordinator, '_binding', lambda selected: (f.journal, f.row, {}))
+    monkeypatch.setattr(coordinator, '_owners', lambda *args: pytest.fail('outbound preparation'))
+    with pytest.raises(OnboardingError, match='explicit_membership_only_operation_required'):
+        coordinator.advance('newcomer')
+    assert f.calls == [] and f.body['registered'] is False
+
 @pytest.mark.parametrize('seconds, accepted', [(180, True), (300, True), (301, False)])
 def test_visibility_migration_cli_uses_bounded_whole_operation_budget(tmp_path, monkeypatch, seconds, accepted):
     target, args, calls = qualified_target_cli(tmp_path, monkeypatch)

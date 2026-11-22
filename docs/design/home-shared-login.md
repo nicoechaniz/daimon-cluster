@@ -128,3 +128,9 @@ current signed identity, pairing, shared sessions/passkeys and application-speci
 grants retain their existing checks. Register a genuine own broker later through
 the existing guarded host configuration writer. No broker is needed to authenticate
 a human for a separately authorized trusted application.
+
+## Preapproved paired-human entry links
+
+The existing owner API `entry-link` accepts `{"return":"/interaction/?view=conversation&client=standalone"}` and an optional `ttl` of60..604800seconds (default7days). It resolves only that home's current paired human, creates and approves an ordinary browser request, and returns `dm.home-entry-link/v1`. No new actor, grant or identity store is created. The link is a private bearer approval intended for the selected human; do not log, commit or publish it.
+
+`/access/entry` carries code/proof in its URL fragment, outside HTTP requests/referrers. Opening the page redeems it through the same exact-origin request/claim/session authority and sets ordinary Secure HttpOnly cookies. The fragment is removed before opening the selected local destination. A repeated exact proof retrieves the same retained session receipt; revocation, changed actor authority and expiration still refuse it. The ordinary15minute code flow and shared-login/passkey paths remain available. Issuance is authorization, not proof that the human opened the link or used Conversation/voice.

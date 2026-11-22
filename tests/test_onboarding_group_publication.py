@@ -133,8 +133,9 @@ def schema_owner(tmp_path):
     return target
 
 
+@pytest.mark.parametrize('action', ['communication-prepare', 'receive-communication-prepare'])
 @pytest.mark.parametrize('boundary', ['prepared', 'intermediate', 'reply'])
-def test_initial_schema_owner_phase_resumes_original_plan_and_physical_store(schema_owner, monkeypatch, boundary):
+def test_initial_schema_owner_phase_resumes_original_plan_and_physical_store(schema_owner, monkeypatch, boundary, action):
     from daimon_matrix import operator_communication_migration as migration
     from daimon_matrix.communication import CommunicationStore
     from clusterctl.onboarding_group_admission import load_owner_runtime
@@ -152,9 +153,10 @@ def test_initial_schema_owner_phase_resumes_original_plan_and_physical_store(sch
     preview = owner.group_publication(dict(operation_id=operation,
         step='context', action='context-preview', params={}), authority_closure={})
     assert preview['communication_plan'] == original
-    request = dict(operation_id=operation, step='communication-prepare',
-        action='communication-prepare', params=dict(expected_plan_sha256=original['plan_sha256'],
-            expires_at_ms=time.time_ns()//1_000_000+60_000))
+    params = dict(expected_plan_sha256=original['plan_sha256'])
+    if action == 'communication-prepare':
+        params['expires_at_ms'] = time.time_ns()//1_000_000+60_000
+    request = dict(operation_id=operation, step='communication-prepare', action=action, params=params)
     options = dict(authority_closure={}, expected_context_sha256=preview['owner_context_sha256'],
         deadline_ns=time.monotonic_ns()+30_000_000_000)
     write, apply, upgrade = migration._write, migration.apply, CommunicationStore.upgrade_legs_v3
@@ -192,6 +194,21 @@ def test_initial_schema_owner_phase_resumes_original_plan_and_physical_store(sch
     assert (group/'application').exists() == (boundary == 'reply')
     assert not (group/'selection.json').exists()
     assert (journal/request['operation_id']/'communication-preparation/migration/completed.json').exists()
+
+
+@pytest.mark.parametrize('seconds', [None, -1, 61])
+def test_receive_schema_preparation_requires_current_bounded_native_deadline(schema_owner, seconds):
+    from daimon_matrix import operator_communication_migration as migration
+    owner = schema_owner
+    ledger = owner.package/'runtime'/owner.document_bundle()['ledger']
+    original = migration.plan(ledger)
+    request = dict(operation_id=str(uuid.uuid4()), step='receive-communication',
+        action='receive-communication-prepare', params=dict(expected_plan_sha256=original['plan_sha256']))
+    deadline = None if seconds is None else time.monotonic_ns()+seconds*1_000_000_000
+    with pytest.raises(OnboardingError, match='deadline'):
+        owner.group_publication(request, authority_closure={}, deadline_ns=deadline)
+    assert migration.plan(ledger) == original
+    assert not (owner.root/'group-admission'/request['operation_id']/'communication-preparation').exists()
 
 
 @pytest.mark.parametrize('rejection', ['expired', 'plan'])
@@ -1355,3 +1372,36 @@ def test_publication_packets_are_closed_and_cannot_use_online_relationship_route
         publication_command({**snapshot, 'params': {**snapshot['params'], 'expected_stores': {}}})
     with pytest.raises(OnboardingError, match='publication_command_required'):
         publication_command({**snapshot, 'params': {**snapshot['params'], 'expected_preservation': {}}})
+
+
+def test_owner_publication_forwards_explicit_destination_replacement(tmp_path, monkeypatch):
+    from daimon_matrix import operator_messaging
+    from clusterctl.onboarding_group_admission import _publication_effect
+    value = dict(operation_id=str(uuid.uuid4()), step='portable-destination',
+        action='visibility-publish', params=dict(disclosure={'selected': 'disclosure'}, bindings=[],
+            expected_installation_sha256='a'*64, initial_configuration=None,
+            replacement_configuration=dict(destination={'publication': 'owner descriptor'},
+                publication_backend={'kind': 'owner-unix/v1', 'socket_path': '/owner/socket'})))
+    packet = request_packet(dict(command=value, offline=True, authority_closure={}))
+    assert packet['command'] == value
+    with pytest.raises(OnboardingError, match='publication_command_required'):
+        publication_command({**value, 'params':{**value['params'], 'unapproved':True}})
+    with pytest.raises(OnboardingError, match='publication_command_required'):
+        publication_command(dict(operation_id=value['operation_id'], step='select', action='selection',
+            params=dict(expected_selection_sha256=None, replacement_configuration={})))
+    # The actual dispatch seam must preserve the exact owner parameters, not
+    # silently discard the replacement and keep the old Telegram destination.
+    calls = []
+    def publish(hosted, directory, installation, **params):
+        calls.append((hosted, directory, installation, params))
+        raise OSError('retained writer result unavailable')
+    monkeypatch.setattr(operator_messaging, 'publish_group_visibility', publish)
+    hosted = object()
+    with pytest.raises(OSError, match='retained writer result unavailable'):
+        _publication_effect(hosted, tmp_path, packet['command'], {}, operation=tmp_path/'operation',
+            context={}, snapshot=None)
+    assert calls == [(hosted, tmp_path/'application', tmp_path/'visibility/installation.json', value['params'])]
+    # Existing requests remain byte-for-byte compatible without the optional field.
+    legacy = copy.deepcopy(value)
+    del legacy['params']['replacement_configuration']
+    assert publication_command(legacy) == legacy

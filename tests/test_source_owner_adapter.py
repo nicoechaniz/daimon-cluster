@@ -606,3 +606,66 @@ def test_source_native_preflight_uses_same_owner_and_requires_no_matrix_binding(
     result['qualification']['code_digest'] = 'b'*64
     with pytest.raises(OnboardingError, match='receiving_source_owner_observation_conflict'):
         client.preflight_native(endpoint)
+
+
+def test_source_base_status_has_no_group_or_custody_prerequisite(adapter):
+    import copy
+    client, result, calls = adapter
+    process = dict(uid=1000, pid=123, start_ticks=10, boot_id=str(uuid.uuid4()))
+    result.clear()
+    result.update(schema='cluster-receiving-base-observation/v1', process=process,
+        server={'body': 'own'}, runtime_sha256='b'*64, receiving_readiness='unobserved',
+        runtime_status={'local_origin': {'body': 'own'}, 'loaded_runtime': {
+            'process_id':123, 'runtime_bundle_sha256':'b'*64}})
+    expected = copy.deepcopy(result)
+    assert client.base_status() == expected
+    assert '--owner-base-status' in calls[-1][0] and '--owner-status' not in calls[-1][0]
+    for bad in (
+            {**expected, 'receiving_readiness':'ready'},
+            {**expected, 'runtime_sha256':'c'*64},
+            {**expected, 'process':{**process, 'pid':999}}):
+        result.clear(); result.update(bad)
+        with pytest.raises(OnboardingError, match='base_owner_observation_conflict'):
+            client.base_status()
+
+
+def test_guest_base_status_selects_base_observer_and_retains_original_candidate(tmp_path):
+    process = dict(uid=1000,pid=123,start_ticks=10,boot_id=str(uuid.uuid4()))
+    response = dict(schema='cluster-receiving-base-observation/v1', process=process,
+        admission_parent={**process,'pid':122}, server={'body':'own'},runtime_sha256='b'*64,
+        receiving_readiness='unobserved',runtime_status={'local_origin':{'body':'own'},
+            'loaded_runtime':{'process_id':123,'runtime_bundle_sha256':'b'*64}})
+    calls=[]
+    backend=SimpleNamespace(_target_call=lambda *args,**kw:calls.append((args,kw)) or response)
+    client=receiving.GuestGroupClient(backend,{},(tmp_path,'a'*64),root=tmp_path)
+    assert client.base_status() == response
+    args,options=calls[-1]
+    assert args[1]=='admitted-running' and options['base_native'] is True
+    assert 'require_loaded' not in options and 'current_native' not in options
+    assert options['candidate']==(tmp_path,'a'*64)
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_source_base_observation_uses_base_socket_and_pins_bundle_without_group(tmp_path, monkeypatch, changed):
+    source=object.__new__(source_cli.Source)
+    source.root=tmp_path
+    bundle={'local_origin':{'body':'own'}}
+    being_seed._write(tmp_path/'runtime.json',bundle)
+    source.observe=lambda **kw:pytest.fail('group observation required')
+    class Owner:
+        def __init__(self,root,socket,**kw):
+            assert root==tmp_path and socket==tmp_path/'matrix.sock'
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def base_status(self):
+            if changed:being_seed._write(tmp_path/'runtime.json',{'local_origin':{'body':'foreign'}})
+            return dict(schema='cluster-receiving-base-observation/v1', process={'pid':123},server={'body':'own'},
+                runtime_status={'local_origin':{'body':'own'},'loaded_runtime':{
+                    'runtime_bundle_sha256':digest(bundle),'process_id':123}},receiving_readiness='unobserved')
+    monkeypatch.setattr(receiving,'OwnerGroupClient',Owner)
+    if changed:
+        with pytest.raises(OnboardingError,match='process_changed'):
+            source.base_receiving_observation(deadline_ns=time.monotonic_ns()+1_000_000_000)
+    else:
+        assert source.base_receiving_observation(deadline_ns=time.monotonic_ns()+1_000_000_000)[
+            'runtime_sha256']==digest(bundle)

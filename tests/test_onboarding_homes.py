@@ -148,6 +148,102 @@ def test_committed_home_reconciliation_survives_unrelated_acceptance_failure():
     assert calls == ['eko']
 
 
+def test_conversation_home_hook_uses_committed_signed_identity_before_matrix(tmp_path):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    progress_path = tmp_path/'progress'
+    progress_path.mkdir(mode=0o750)
+    progress = Progress(progress_path, worker_uid=os.geteuid())
+    backend = FixtureBackend()
+    store = JobStore(tmp_path/'jobs')
+    selected = plan(browser=False)
+    selected['schema'] = CONVERSATION_PLAN_SCHEMA
+    pending = store.submit(selected, backend)
+    placement = {'owner': pending['owner'], 'plan_digest': pending['plan_digest']}
+    calls = []
+    class Provider:
+        def reconcile(self, value):
+            calls.append(value)
+            return {'state': 'complete', 'selection_digest': hashlib.sha256(
+                json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
+    homes = AcceptedHomes(progress=progress_path, worker_uid=os.geteuid(),
+        placements={'eko': placement}, state=tmp_path/'homes', provider=Provider())
+    worker = Worker(store, lambda: backend, publish=progress.publish, homes=homes)
+    for _ in range(3):
+        worker.once()
+    assert calls == []
+    worker.once()
+    observed = progress.read('eko', owner='sai')
+    assert observed['completed_steps'] == ['environment', 'context', 'memory', 'identity']
+    assert 'matrix' not in observed['completed_steps']
+    assert calls == [placement]
+    assert homes(observed)['retried'] is True
+    assert calls == [placement]
+
+
+def test_technical_login_resumes_private_cookie_and_logs_out_without_owner_reapproval(tmp_path, monkeypatch):
+    import urllib.request
+    import urllib.error
+    from clusterctl.onboarding import digest
+    from clusterctl.onboarding_homes import verify_conversation_access
+    from clusterctl import being_seed
+    request = {'origin': 'https://fixture.example', 'home_ref': 'fixture-home', 'human_ref': 'human:local:fixture'}
+    tmp_path.chmod(0o700)
+    journal = tmp_path/'browser.json'
+    checks = dict.fromkeys(('own_human', 'conversation', 'anonymous_denied', 'admin_denied', 'signed_out'), False)
+    being_seed._write(journal, dict(schema='cluster-conversation-browser-check/v1',
+        pins=digest(request), phase='claimed', entry={'code': 'original', 'proof': 'fixture-only'},
+        cookies=[dict(name='__Host-home', value='synthetic-session', domain='fixture.example',
+                      domain_specified=False, path='/', secure=True, expires=None)], checks=checks))
+    calls = []
+    class Response:
+        status = 200
+        def __init__(self, url, value):
+            self.url, self.value = url, value
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self, limit):
+            return json.dumps(self.value).encode()
+        def geturl(self):
+            return self.url
+    class Browser:
+        def __init__(self, jar=None):
+            self.jar = jar
+        def open(self, req, **options):
+            calls.append(req.full_url)
+            assert req.full_url.startswith(request['origin']), 'No new owner request or claim'
+            path = req.full_url.removeprefix(request['origin'])
+            if self.jar is None or path == '/interaction/api/state':
+                raise urllib.error.HTTPError(req.full_url, 403, 'denied', {}, None)
+            if path == '/access/identity':
+                value = {'actor': {'ref': request['human_ref']}}
+            elif path == '/interaction/api/interaction':
+                value = {'schema': 'telecodex.presentation-list/v1'}
+            else:
+                assert path == '/access/logout'
+                self.jar.clear()
+                value = {'status': 'signed-out'}
+            return Response(req.full_url, value)
+    def opener(*handlers):
+        cookie = next((h for h in handlers if isinstance(h, urllib.request.HTTPCookieProcessor)), None)
+        return Browser(cookie.cookiejar if cookie else None)
+    monkeypatch.setattr(urllib.request, 'build_opener', opener)
+    result = verify_conversation_access(request, owner_url='http://127.0.0.1:1',
+        owner_token='not-used', journal=journal)
+    assert all(result.values())
+    saved = json.loads(journal.read_text())
+    assert saved['phase'] == 'signed-out' and saved['cookies'] == []
+    assert journal.stat().st_mode & 0o777 == 0o600
+    assert calls[-1].endswith('/access/logout')
+    count = len(calls)
+    assert verify_conversation_access(request, owner_url='not-used', owner_token='not-used', journal=journal) == result
+    assert len(calls) == count, 'Terminal receipt needs no further authentication'
+    with pytest.raises(OnboardingError, match='checkpoint_changed'):
+        verify_conversation_access({**request, 'human_ref': 'human:local:foreign'},
+            owner_url='not-used', owner_token='not-used', journal=journal)
+
+
 def test_local_provisioning_keeps_context_artifacts_and_exact_predecessors(tmp_path):
     home = tmp_path / "owner"
     home.mkdir(mode=0o700)

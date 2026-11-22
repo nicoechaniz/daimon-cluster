@@ -335,7 +335,10 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcryp
   messages.push(m);
   if(m.type==='home-artifact:review-update')setImmediate(()=>events.message({source:frame.contentWindow,origin:'null',data:{type:'home-artifact:review-applied',requestId:m.requestId,resource:m.resource,version:m.version,accepted}}));
  }}};
- const context={window:{addEventListener:(k,f)=>events[k]=f},document:{hidden:false,addEventListener(){}},Uint8Array,TextDecoder,AbortController,crypto:webcrypto,
+ const context={window:{addEventListener:(k,f)=>events[k]=f},document:{hidden:false,addEventListener(){}},Uint8Array,TextDecoder,AbortController,crypto:{subtle:{digest:async (...args)=>{
+   // Exceed the former fixed settling delay to exercise asynchronous completion.
+   await new Promise(resolve=>setTimeout(resolve,120));return webcrypto.subtle.digest(...args);
+ }}},
  setTimeout,clearTimeout,fetch:async url=>{
   calls.push(url);
   if(url==='/catalog.json')return new Response(JSON.stringify({entries:[a,b].map(resource=>({kind:'artifact',model_review:true,title:resource,resource_ref:'dm:resource:v1:'+resource}))}));
@@ -355,9 +358,20 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcryp
  assert(bytesCache.get('b'));
  context.installLiveReview(frame);
  const send=data=>events.message({source:frame.contentWindow,origin:'null',data});
- const settle=async()=>{for(let i=0;i<30;i++)await new Promise(r=>setTimeout(r,2));};
- send({type:'home-artifact:review-catalog'});await settle();
- const choose=async resource=>{send({type:'home-artifact:review-select',resource});await settle();};
+ const wait=async predicate=>{
+  const deadline=Date.now()+5000;
+  while(!predicate()){
+   assert(Date.now()<deadline,'review did not finish: '+JSON.stringify({calls,messages}));
+   await new Promise(resolve=>setTimeout(resolve,5));
+  }
+ };
+ send({type:'home-artifact:review-catalog'});
+ await wait(()=>messages.some(message=>message.type==='home-artifact:review-catalog'));
+ const choose=async resource=>{
+  const start=messages.length;send({type:'home-artifact:review-select',resource});
+  await wait(()=>messages.slice(start).some(message=>
+   message.type==='home-artifact:review-current'||message.type==='home-artifact:review-error'));
+ };
  await choose(b);await choose(a);const start=calls.length;await choose(b);
  assert.deepEqual(calls.slice(start),['/works/'+b+'/current/review-live.json'],'warm switch still reauthorizes and avoids geometry fetch/decode');
  await choose(a);denied=true;const before=messages.filter(m=>m.type==='home-artifact:review-commit').length;await choose(b);
@@ -367,9 +381,10 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcryp
  await choose(a);revision='3'.repeat(64);accepted=false;await choose(b);accepted=true;n=calls.length;await choose(b);assert.equal(calls.length-n,2,'rejected child data is not retained');
  events.pagehide();n=calls.length;await choose(a);assert.equal(calls.length-n,2,'pagehide releases retained data');
  send({type:'home-artifact:live-review',enabled:false});
-})();
+})().catch(error=>{console.error(error);process.exitCode=1});
 '''
-    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+    result = subprocess.run([node, '-e', fixture, str(source)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 def test_scene_index_restricts_paths_and_binds_quantized_metadata():

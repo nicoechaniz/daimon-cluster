@@ -383,14 +383,27 @@ class FirstCustody:
         No receiving key, holder key or online Root custody is opened here.
         The separate host custody grant still authorizes use of this ceremony.
         """
+        return self._admission_public(plan)[0]
+
+    def public_identity(self, plan: dict) -> dict:
+        """Export the verified public origin/authority for Home registration.
+
+        This opens no holder, unlock file, receiving custody or native runtime.
+        The plan's existing custody grant still scopes the public source read.
+        """
+        return self._admission_public(plan)[1]
+
+    def _admission_public(self, plan: dict) -> tuple[dict, dict]:
         from daimon_matrix import identity, operator_first_embodiment as first
+        from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
         from . import onboarding_credential
         if not self.authorize(plan):
             raise OnboardingError("identity_authorization_required")
         root = self._path(plan)
         with being_seed._locked(root):
             activation = document(root / "target-activation.json")
-            _, previous = first.validate_activation(document(root / "genesis.json"),
+            genesis = document(root / "genesis.json")
+            _, previous = first.validate_activation(genesis,
                 document(root / "target-request.json"), activation)
             request, response = document(root / "credential-request.json"), document(root / "credential-response.json")
             current = onboarding_credential.verify_response(previous, plan, request, response)
@@ -402,10 +415,15 @@ class FirstCustody:
             identity.verify_embodiment_credential(credential, current.state, at_ms=now)
             identity.verify_incarnation_authorization(current.incarnations[member["incarnation_authorization_id"]],
                 credential, current.state, at_ms=now)
-            return dict(being_ref=current.manifest.being_ref, body_ref=origin["body_ref"],
+            coordinates = dict(being_ref=current.manifest.being_ref, body_ref=origin["body_ref"],
                 embodiment_id=origin["embodiment_id"], incarnation_id=origin["incarnation_id"],
                 activation_id=activation["activation_id"], credential_id=credential["artifact_id"],
                 manifest_hash=current.manifest.digest)
+            authority = dict(schema=AUTHORITY_SCHEMA, control_artifacts=[genesis],
+                control_head=current.state.head, manifest=current.manifest.value,
+                credentials=list(current.credentials.values()),
+                incarnations=list(current.incarnations.values()))
+            return coordinates, dict(authority=authority, origin=origin)
 
 
 def _native_run(arguments: list[str], password: Path | None, *,

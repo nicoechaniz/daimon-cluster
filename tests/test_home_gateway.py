@@ -1012,3 +1012,42 @@ def test_login_only_home_has_no_artifact_broker(tmp_path):
                  headers={"Host": "one.example", "Cookie": "__Host-home=" + token})) as response:
             assert response.status == 200
             assert json.load(response)["actor"]["ref"] == "human-one"
+
+
+def test_preapproved_entry_link_keeps_pair_origin_and_current_authority(tmp_path):
+    from urllib.parse import urlsplit, parse_qs
+    now = [1000]
+    authority = Authority()
+    homes = {n: {'owner_being_ref':'owner-'+n, 'owner_revision':'v1',
+        'owner_token_file':key(tmp_path,n,'credential-'+n),
+        'public_url':'https://'+n+'.example', 'vpn_url':'https://private-'+n+'.example',
+        'name':n} for n in ('one','two')}
+    class Empty:
+        def state(self):return {'schema':1,'entries':[]}
+    app=Application({'homes':homes},authority,Sessions(tmp_path/'state',clock=lambda:now[0]),
+        backends={n:Empty() for n in homes})
+    with pytest.raises(ValueError):app.owner('one','credential-two','entry-link',{'return':'/interaction/'})
+    with pytest.raises(ValueError):app.owner('one','credential-one','entry-link',{'return':'//foreign.example/'})
+    link=app.owner('one','credential-one','entry-link',{'return':'/interaction/?view=conversation'})
+    assert link['expires_at']==1000+604800
+    parsed=urlsplit(link['url']);assert not parsed.query and parsed.path=='/access/entry'
+    payload={k:v[0] for k,v in parse_qs(parsed.fragment).items()}
+    with serving(handler(app)) as root:
+        with urllib.request.urlopen(urllib.request.Request(root+'/access/entry',headers={'Host':'one.example'})) as r:
+            assert r.status==200 and b'/access/entry.js' in r.read()
+        def claim(host,origin):
+            return urllib.request.urlopen(urllib.request.Request(root+'/access/entry',data=json.dumps(payload).encode(),headers={'Host':host,'Origin':origin,'Content-Type':'application/json'}))
+        with pytest.raises(urllib.error.HTTPError):claim('two.example','https://two.example')
+        with pytest.raises(urllib.error.HTTPError):claim('one.example','https://foreign.example')
+        with claim('one.example','https://one.example') as r:
+            assert json.load(r)['return']=='/interaction/?view=conversation'
+            cookies=r.headers.get_all('Set-Cookie');assert all('HttpOnly' in c and 'Secure' in c for c in cookies)
+            token=next(c.split(';')[0].split('=',1)[1] for c in cookies if c.startswith('__Host-home='))
+            assert app.identity(token,'one','https://one.example').ref=='human-one'
+            assert app.identity(token,'two','https://two.example') is None
+        # Same exact proof retries its existing receipt, never another actor/session.
+        with claim('one.example','https://one.example') as r:assert json.load(r)['status']=='approved'
+        authority.people['human-one']=Actor('human-one','human','v2','Changed')
+        with pytest.raises(urllib.error.HTTPError):claim('one.example','https://one.example')
+        now[0]+=604801
+        with pytest.raises(urllib.error.HTTPError):claim('one.example','https://one.example')

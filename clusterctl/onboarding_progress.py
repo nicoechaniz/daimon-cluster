@@ -9,7 +9,8 @@ import uuid
 from pathlib import Path
 
 from . import being_seed
-from .onboarding import REASONS, SCHEMA, STAGES, STATES, OnboardingError
+from .onboarding import (REASONS, SCHEMA, STAGES, CONVERSATION_JOB_SCHEMA,
+    CONVERSATION_STAGES, STATES, OnboardingError)
 
 
 def validate(value: object) -> dict:
@@ -18,7 +19,7 @@ def validate(value: object) -> dict:
         "completed_steps", "active", "updated_ms",
     }:
         raise OnboardingError("invalid_onboarding_progress")
-    if (value["schema"] != SCHEMA
+    if (value["schema"] not in {SCHEMA, CONVERSATION_JOB_SCHEMA}
             or any(not isinstance(value[key], str) or not being_seed.NAME.fullmatch(value[key])
                    for key in ("name", "owner"))
             or not isinstance(value["plan_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["plan_digest"])
@@ -28,12 +29,13 @@ def validate(value: object) -> dict:
             or type(value["active"]) is not bool
             or not isinstance(value["completed_steps"], list)):
         raise OnboardingError("invalid_onboarding_progress")
+    selected_stages = CONVERSATION_STAGES if value["schema"] == CONVERSATION_JOB_SCHEMA else STAGES
     count = len(value["completed_steps"])
-    if value["completed_steps"] != list(STAGES[:count]) or count > len(STAGES):
+    if value["completed_steps"] != list(selected_stages[:count]) or count > len(selected_stages):
         raise OnboardingError("invalid_onboarding_progress")
-    complete = count == len(STAGES)
+    complete = count == len(selected_stages)
     if (value["active"] != complete or (value["state"] == "complete") != complete
-            or value["stage"] != (None if complete else STAGES[count])):
+            or value["stage"] != (None if complete else selected_stages[count])):
         raise OnboardingError("invalid_onboarding_progress")
     return value
 

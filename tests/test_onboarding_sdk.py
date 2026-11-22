@@ -560,3 +560,28 @@ def test_sdk_flush_rejects_a_tree_spanning_filesystems(tmp_path, monkeypatch):
         monkeypatch.setattr(Path, 'lstat', lstat)
         with pytest.raises(OnboardingError, match='qualified_runtime_imports_required'):
             onboarding_sdk._sync_import_tree(root, monitor)
+
+
+def test_explicit_import_cache_retirement_needs_existing_tree_and_exclusive_lock(tmp_path):
+    import py_compile
+    from clusterctl import being_seed
+    code, fingerprint, home = fixture(tmp_path)
+    venv = onboarding_sdk.install(home, code, fingerprint, code_uid=os.geteuid())
+    with pytest.raises(OnboardingError, match='qualified_runtime_imports_required'):
+        onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid(), retire_bytecode=True)
+    assert not (venv.parent/'runtime-imports').exists()
+    imports = onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid())
+    source = imports/'daimon_matrix/__init__.py'
+    original = source.read_bytes()
+    cache = Path(py_compile.compile(str(source), doraise=True))
+    cache.parent.chmod(0o700)
+    cache.chmod(0o600)
+    with pytest.raises(OnboardingError, match='qualified_runtime_imports_required'):
+        onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid())
+    with being_seed._locked(venv.parent, shared=True):
+        with pytest.raises(being_seed.SeedError, match='seed_operation_in_progress'):
+            onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid(), retire_bytecode=True)
+    assert cache.is_file()
+    assert onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid(), retire_bytecode=True) == imports
+    assert source.read_bytes() == original and not cache.exists()
+    assert onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid()) == imports

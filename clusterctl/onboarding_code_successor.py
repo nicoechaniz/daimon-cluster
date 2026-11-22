@@ -221,10 +221,10 @@ def verify(code: Path, fingerprint: str, base: Path, base_fingerprint: str, *, u
         and 'clusterctl/onboarding_transfer.py' in after else set())
     # Historical module-only selections never claimed seed-tool usability.
     # Retain their frozen-asset contract and the former absent-helper addition;
-    # qualify the complete bundle only for a new executable-asset transition.
+    # qualify any executable-asset transition against the complete literal
+    # bundle. The same module may repair an incomplete legacy asset capture.
     seed_tools = (_seed_tool_bundle(code, code/'clusterctl/being_seed.py', uid=uid)
-        if changed_seed_paths - legacy_addition and 'clusterctl/being_seed.py' in after
-        and after['clusterctl/being_seed.py'] != before.get('clusterctl/being_seed.py') else {})
+        if changed_seed_paths - legacy_addition and 'clusterctl/being_seed.py' in after else {})
     def module(name: str) -> bool:
         return re.fullmatch(r'clusterctl/(?:__init__|[a-z][a-z0-9_]*)\.py', name) is not None
     def sdk(name: str) -> bool:
@@ -343,9 +343,8 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
     original_files = {row['path']:row['sha256'] for row in original['files']}
     source_seed_tools = (_seed_tool_bundle(source.parent, source/'being_seed.py', uid=os.geteuid(), read=read_code)
         if 'being_seed.py' in modules else {})
-    seed_tools = (source_seed_tools
-        if source_seed_tools and hashlib.sha256(read_code(source/'being_seed.py')).hexdigest()
-        != original_files.get('clusterctl/being_seed.py') else {})
+    seed_tools = (source_seed_tools if source_seed_tools
+        and any(original_files.get(name) != checksum for name,checksum in source_seed_tools.items()) else {})
     output.mkdir(mode=0o755)
     output.chmod(0o755)
     replaced = {'clusterctl/' + name for name in modules} | set(seed_tools)

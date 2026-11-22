@@ -242,7 +242,7 @@ def test_late_durable_prepare_keeps_exact_request_without_reporting_success(tmp_
     class Client:
         def prepare(self, method, params):
             authored.append(True)
-            return dict(method=method,params=params,request_id='one-retained-request')
+            return dict(method=method,params=params,request_id='one-retained-request',issued_at_ms=time.time_ns()//1_000_000)
     monkeypatch.setattr(owner,'_client',lambda _role:Client())
     durable = owner._durable_control
     def late(path):
@@ -1587,7 +1587,7 @@ def test_failed_request_publication_is_completed_before_native_control(tmp_path,
     class FakeClient:
         def prepare(self, method, params):
             prepared.append(True)
-            return dict(method=method, params=params, request_id='fixture-request')
+            return dict(method=method, params=params, request_id='fixture-request',issued_at_ms=time.time_ns()//1_000_000)
 
         def send(self, request):
             calls.append(request)
@@ -1919,7 +1919,7 @@ def test_combined_owner_control_keeps_durable_request_after_lost_acceptance(
     sent = []
 
     def prepare(method, params):
-        request = dict(method=method, params=params, request_id="one-retained-request")
+        request = dict(method=method, params=params, request_id="one-retained-request",issued_at_ms=time.time_ns()//1_000_000)
         authored.append(request)
         return request
 

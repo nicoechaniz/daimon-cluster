@@ -493,6 +493,57 @@ def test_initial_parent_refuses_a_changed_profile_before_admission(monkeypatch):
             not_after_ms=time.time_ns() // 1_000_000 + 60000))
 
 
+def test_closed_sdk_preparation_finishes_before_admission_acquisition(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_code_successor, onboarding_sdk
+
+    target = SimpleNamespace(root=tmp_path, home=tmp_path, code=tmp_path, code_uid=os.geteuid(),
+        code_digest='a' * 64, plan={}, genesis={},
+        observe=lambda: {'receipt': {'origin': {}}})
+    prepared = []
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b' * 40})
+
+    def prepare(*args, **kwargs):
+        prepared.append(True)
+        return tmp_path / 'runtime-imports'
+
+    class ReachedAdmission(Exception):
+        pass
+
+    def launch(self, client, spawn):
+        assert prepared == [True], 'SDK verification consumed an acquired unsupervised lease'
+        raise ReachedAdmission
+
+    monkeypatch.setattr(onboarding_sdk, 'runtime_imports', prepare)
+    monkeypatch.setattr(ReceivingHolder, 'launch', launch)
+    with pytest.raises(ReachedAdmission):
+        AdmittedDaemon(target, object()).start(receive_only=True)
+
+
+@pytest.mark.parametrize('failure', ['verification', 'startup-deadline'])
+def test_failed_sdk_preparation_never_acquires_admission_or_opens_child_ipc(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_code_successor, onboarding_runtime, onboarding_sdk
+
+    target = SimpleNamespace(code=tmp_path, code_uid=os.geteuid(),
+        observe=lambda: {'receipt': {'origin': {}}})
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b' * 40})
+    clock = [0]
+    monkeypatch.setattr(onboarding_runtime.time, 'monotonic_ns', lambda: clock[0])
+
+    def prepare(*args, **kwargs):
+        if failure == 'verification':
+            raise OnboardingError('qualified_runtime_imports_required')
+        clock[0] = (onboarding_runtime.READY_TIMEOUT_S + 1) * 1_000_000_000
+        return tmp_path / 'runtime-imports'
+
+    monkeypatch.setattr(onboarding_sdk, 'runtime_imports', prepare)
+    monkeypatch.setattr(onboarding_runtime.socket, 'socketpair', lambda: pytest.fail('failed preparation opened IPC'))
+    monkeypatch.setattr(ReceivingHolder, 'launch', lambda *a: pytest.fail('failed preparation acquired admission'))
+    with pytest.raises(OnboardingError):
+        AdmittedDaemon(target, object()).start(receive_only=True)
+
+
 @pytest.mark.parametrize('reason', ['lease-hard-deadline', 'admission-renew-failed',
                                   'body-observer-unavailable', 'runtime-exited'])
 def test_parent_retains_supervision_outcome_after_actual_child_cleanup(monkeypatch, capsys, reason):
@@ -645,6 +696,23 @@ def test_actual_supervisor_failure_retains_safe_cause_and_parent_reports_after_c
     first = owned.supervisor.renewal_failure
     first['code'] = private
     assert owned.supervisor.renewal_failure == frames[0]
+
+
+def test_renewal_failure_phase_is_optional_closed_and_never_exception_text():
+    from clusterctl.admission import AdmissionUnavailable
+    from clusterctl.admission_supervisor import _renewal_failure, renewal_failure_diagnostic
+    error = AdmissionUnavailable('admission round-trip deadline expired')
+    legacy = _renewal_failure(error, 2)
+    assert renewal_failure_diagnostic(legacy) == legacy and 'phase' not in legacy
+    error.phase, error.action = 'receive', 'renew'
+    observed = _renewal_failure(error, 2)
+    assert renewal_failure_diagnostic(observed) == observed
+    assert observed['phase'] == 'receive' and observed['action'] == 'renew'
+    private = 'secret and /private/path'
+    error.phase, error.action = private, private
+    assert _renewal_failure(error, 2) == legacy
+    assert renewal_failure_diagnostic({**legacy, 'phase':private, 'action':'renew'}) is None
+    assert renewal_failure_diagnostic({**legacy, 'phase':'receive'}) is None
 
 
 @pytest.mark.parametrize('change', [

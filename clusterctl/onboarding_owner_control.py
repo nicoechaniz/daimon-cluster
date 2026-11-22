@@ -28,6 +28,8 @@ PUBLIC_ERRORS = frozenset({
     'receiving_control_process_changed', 'receiving_control_parent_changed',
     'receiving_control_binding_conflict', 'receiving_control_fresh_request_expired',
     'receiving_owner_scope_required', 'receiving_control_not_accepted',
+    'current_onboarding_target_required', 'qualified_onboarding_group_required',
+    'receiving_bootstrap_public_preimage_changed', 'onboarding_observation_deadline_expired',
     'receiving_control_completion_uncertain', 'receiving_group_socket_changed',
     'receiving_control_superseded', 'receiving_control_auth_capacity', 'receiving_control_private_file_required',
     'invalid_receiving_control_request', 'daemon_response_truncated',
@@ -84,8 +86,6 @@ class RetainedStatusOwner(OwnerGroupClient):
 
     def _status_response(self, client, *, params: dict | None = None) -> dict:
         if params is None:
-            if 'scope.me' not in client.config.capability.methods:
-                return RetainedStatusOwner._status_response(self, client, params={})
             response = RetainedStatusOwner._status_response(self, client, params={'view': 'receiving'})
             if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
                 return RetainedStatusOwner._status_response(self, client, params={})
@@ -472,6 +472,13 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
         request, current, response = send_control_request(owner, client, path,
             being_seed._read(path, limit=being_seed.MAX_SELECTION), current, validate=before_send)
         _accept(deadline_ns)
+        if (response is not None and response.get('ok') is False
+                and response.get('error') == {'code': 'reader_roster_unavailable', 'retryable': True}):
+            # An authenticated SQLite BUSY/LOCKED rejection selected no effect.
+            # Retry the exact request once after verifying the existing fences.
+            before_send()
+            response = client.send(request)
+            _accept(deadline_ns)
         if response is None:
             gate = current['gate']
         elif response.get('ok') is not True:
@@ -512,6 +519,43 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
             command_sha256=digest(command))
 
 
+def reader_rpc(owner: OwnerGroupClient, value: dict, *, deadline_ns: int) -> dict:
+    """Closed maintenance RPC over an already authorized owner connection."""
+    from .onboarding_receiving_update import observe_current_reader
+    _accept(deadline_ns)
+    if not isinstance(value, dict):
+        raise OnboardingError('invalid_receiving_control_request')
+    if value == {'action': 'status'}:
+        return owner.status()
+    if value.get('action') == 'native-current' and set(value) == {'action','plan_digest'}:
+        if (not isinstance(value['plan_digest'],str)
+                or re.fullmatch('[0-9a-f]{64}',value['plan_digest']) is None):
+            raise OnboardingError('invalid_receiving_control_request')
+        from .onboarding_target import observe_current_native_target
+        return observe_current_native_target(owner.root,
+            expected_plan_digest=value['plan_digest'], deadline_ns=deadline_ns,
+            owner_type=type(owner))
+    if value.get('action') == 'observe' and set(value) == {'action', 'options'}:
+        options = value['options']
+        if (not isinstance(options, dict) or set(options) != {'expected_selection',
+                'expires_at_ms', 'require_admitted', 'receive_only'}):
+            raise OnboardingError('invalid_receiving_control_request')
+        return observe_current_reader(owner, **options)
+    if value.get('action') == 'control' and set(value) - {'slot'} == {'action', 'command', 'expected'}:
+        command = value['command']
+        import uuid
+        if (not isinstance(command, dict) or command.get('phase') not in {'revoke', 'select'}
+                or str(uuid.UUID(command['operation_id'])) != command['operation_id']):
+            raise OnboardingError('invalid_receiving_control_request')
+        slot = value.get('slot')
+        if 'slot' in value and (not isinstance(slot,str) or re.fullmatch('[0-9a-f]{64}',slot) is None):
+            raise OnboardingError('invalid_receiving_control_request')
+        suffix = '' if slot is None else '-' + slot
+        path = owner.root / 'receiving-control' / (command['operation_id'] + '-' + command['phase'] + suffix + '.json')
+        return execute(owner, command, path, expected=value['expected'], deadline_ns=deadline_ns)
+    raise OnboardingError('invalid_receiving_control_request')
+
+
 def main() -> int:
     """Invoke as the receiving owner with the already selected closed SDK."""
     import argparse
@@ -525,10 +569,36 @@ def main() -> int:
     parser.add_argument('--code', type=Path)
     parser.add_argument('--body-venv', type=Path)
     parser.add_argument('--require-admitted', action='store_true')
-    parser.add_argument('--deadline-ns', type=int, required=True)
-    parser.add_argument('--time-namespace', required=True)
+    parser.add_argument('--deadline-ns', type=int)
+    parser.add_argument('--time-namespace')
+    parser.add_argument('--reader-rpc', action='store_true')
+    parser.add_argument('--max-seconds', type=float)
     args = parser.parse_args()
     try:
+        if args.reader_rpc:
+            if (args.deadline_ns is not None or args.time_namespace is not None
+                    or args.max_seconds is None or not 0 < args.max_seconds <= 180
+                    or args.path is not None or args.observe_only or args.retain_status
+                    or args.identity_expires_at_ms is not None or args.code is not None
+                    or args.body_venv is not None or args.require_admitted):
+                raise OnboardingError('invalid_receiving_control_request')
+            deadline = time.monotonic_ns() + int(args.max_seconds * 1_000_000_000)
+            value = json.loads(sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1))
+            # Only this read may cover parent preparation plus child startup.
+            # Writes and all other owner requests keep their original60s cap.
+            if args.max_seconds > 60 and (
+                    not isinstance(value, dict) or set(value) != {'action', 'plan_digest'}
+                    or value.get('action') != 'native-current'):
+                raise OnboardingError('invalid_receiving_control_request')
+            class CurrentOwner(OwnerGroupClient):
+                def _status_response(self, client):
+                    return client.runtime_status(view='receiving')[1]
+            with CurrentOwner(args.root, args.socket, deadline_ns=deadline) as owner:
+                result = reader_rpc(owner, value, deadline_ns=deadline)
+            print(json.dumps(result))
+            return 0
+        if args.max_seconds is not None or args.deadline_ns is None or args.time_namespace is None:
+            raise OnboardingError('invalid_receiving_control_request')
         _accept(args.deadline_ns)
         if (args.deadline_ns - time.monotonic_ns() > 60_000_000_000
                 or os.readlink('/proc/self/ns/time') != args.time_namespace):

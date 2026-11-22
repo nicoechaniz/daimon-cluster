@@ -68,13 +68,15 @@ def test_successful_view_preserves_actual_ready_handshake(monkeypatch):
     assert not errors
 
 
-def test_slow_view_uses_the_shared_startup_deadline_not_a_five_second_subwindow(monkeypatch):
+@pytest.mark.parametrize('delay_seconds,explicit_deadline', [(6, True), (70, False)])
+def test_slow_view_uses_the_shared_startup_deadline_not_a_five_second_subwindow(
+        monkeypatch, delay_seconds, explicit_deadline):
     import select
     stop = threading.Event()
     release = threading.Event()
     reader, writer = os.pipe()
     now = [time.monotonic_ns()]
-    deadline = now[0] + 60_000_000_000
+    deadline = now[0] + (60 if explicit_deadline else 180) * 1_000_000_000
     original_select = select.select
     calls = []
     observed = []
@@ -89,7 +91,7 @@ def test_slow_view_uses_the_shared_startup_deadline_not_a_five_second_subwindow(
     def delayed_select(*args):
         calls.append(True)
         if len(calls) == 1:
-            now[0] += 6_000_000_000
+            now[0] += delay_seconds * 1_000_000_000
             release.set()
             return [], [], []
         return original_select(*args)
@@ -102,7 +104,8 @@ def test_slow_view_uses_the_shared_startup_deadline_not_a_five_second_subwindow(
 
     def run():
         try:
-            serve_views([view()], stop, ready_descriptor=writer, startup_deadline_ns=deadline)
+            serve_views([view()], stop, ready_descriptor=writer,
+                startup_deadline_ns=deadline if explicit_deadline else None)
         except BaseException as error:
             errors.append(error)
 

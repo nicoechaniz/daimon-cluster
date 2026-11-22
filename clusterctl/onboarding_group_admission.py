@@ -871,11 +871,16 @@ def publication_command(value: dict) -> dict:
                 or not isinstance(value['action'], str) or value['action'] not in PUBLICATIONS
                 or not isinstance(value['params'], dict)
                 or set(value['params']) != PUBLICATIONS[value['action']] and not (
+                    value['action'] == 'visibility-publish'
+                    and set(value['params']) == PUBLICATIONS['visibility-publish'] | {'replacement_configuration'}
+                    and isinstance(value['params']['replacement_configuration'], dict)
+                    and set(value['params']['replacement_configuration']) == {'destination', 'publication_backend'}
+                    and value['params']['initial_configuration'] is None
+                    and value['params']['expected_installation_sha256'] is not None
+                ) and not (
                     value['action'] in {'snapshot', 'receive-snapshot'}
                     and PUBLICATIONS[value['action']] <= set(value['params'])
-                    and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'}) and not (
-                    value['action'] == 'visibility-publish'
-                    and set(value['params']) == PUBLICATIONS['visibility-publish'] | {'replacement_configuration'})):
+                    and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'})):
             raise ValueError
         params = value['params']
         if value['action'] == 'preparation-preview' and (
@@ -1515,9 +1520,18 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         # The peer app has its own signed catalog key, separate from the base
         # native runtime. Prepare its stores before first ordinary group load.
         from daimon_matrix.chat_host import application_view
-        from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+        from daimon_matrix.native_egress import NativeEgressError, VISIBILITY_SCHEMA_VERSION
         view = application_view(hosted, directory, installation, catalog_mode='migrate')
-        view.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        try:
+            view.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        except NativeEgressError as error:
+            if params['initial_configuration'] is None or str(error) != 'egress_catalog_invalid':
+                raise
+            # An admitted receive-only body can already retain genuine pending
+            # obligations. Adopt their closed storage key without changing any
+            # original policy, attempt or outcome; never reauthor that history.
+            view.egress.adopt_closed_visibility_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+            view.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
         view.egress.validate_registered_catalogs()
         return dict(installation_sha256=result['installation_sha256'])
     from .onboarding_peer import publish_group_selection

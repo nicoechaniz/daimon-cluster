@@ -552,6 +552,26 @@ jobs:
               '--uid', str(os.getuid()), '--gid', str(os.getgid()),
               '--sdk-commit', ADMISSION_MATRIX_COMMIT, '--identity-python', sys.executable, *selected], check=True)
           PY
+      - name: Qualify the original Source visibility schema migration
+        if: needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_source.py')
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          from tools.qualify_candidate_admission import SOURCE_VISIBILITY_COMMIT, SOURCE_VISIBILITY_TEST
+
+          candidate = Path(os.environ['RUNNER_TEMP']) / 'source-visibility-sdk'
+          subprocess.run([sys.executable, '-m', 'venv', '--system-site-packages', str(candidate)], check=True)
+          interpreter = candidate / 'bin/python'
+          subprocess.run([str(interpreter), '-m', 'pip', 'install', '--no-deps', '--ignore-installed',
+              'daimon-matrix @ git+https://github.com/AlterMundi/daimon-matrix.git@' + SOURCE_VISIBILITY_COMMIT], check=True)
+          subprocess.run(['sudo', 'env', 'LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''),
+              str(interpreter), '-B', 'tools/ci_guest_owner.py', '--uid', str(os.getuid()), '--gid', str(os.getgid()),
+              '--sdk-commit', SOURCE_VISIBILITY_COMMIT, '--identity-python', sys.executable,
+              SOURCE_VISIBILITY_TEST], check=True)
+          PY
       - run: >-
           python -m pytest -q -x --tb=short
           ${{ needs.scope.outputs.pytest_args }}

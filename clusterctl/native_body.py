@@ -34,7 +34,7 @@ remaining=min(request['remaining_seconds'],request['expires_at_ms']/1000-time.ti
 if remaining<=0:raise SystemExit('receiving_host_deadline_expired')
 argv=request['argv']
 if request['owner_clock']:
-    deadline=str(started_ns+int(min(remaining,60)*1e9))
+    deadline=str(started_ns+int(remaining*1e9))
     if argv.count('--observation-deadline-ns')==1 and '--deadline-ns' not in argv and '--time-namespace' not in argv:
         argv[argv.index('--observation-deadline-ns')+1]=deadline
     elif '--observation-deadline-ns' not in argv and argv.count('--deadline-ns')==1 and argv.count('--time-namespace')==1:
@@ -165,7 +165,7 @@ class NativeBody:
         if self.code_available(code, fingerprint, deadline_ns=deadline_ns):
             return code
         deadline = min(deadline_ns or time.monotonic_ns() + 60_000_000_000,
-                       time.monotonic_ns() + 60_000_000_000)
+                       time.monotonic_ns() + 300_000_000_000)
         progress = state / (fingerprint + '.json')
         if progress.exists():
             retained = being_seed._read(progress)
@@ -228,7 +228,7 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
                 owner_clock: bool = False) -> tuple[list[str], float]:
         if (not argv or any(not isinstance(item, str) or '\0' in item for item in argv)
                 or (uid, gid) not in {(0, 0), (1000, 1000)}
-                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 65
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300
                 or type(owner_clock) is not bool
                 or env is not None and env != {'HOME': '/home/agent'}
                 or input_data is not None and (not isinstance(input_data, str)

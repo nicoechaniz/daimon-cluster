@@ -8,6 +8,98 @@ import pytest
 from tools import children_application_inventory as inventory
 
 
+def listener_fixture(root):
+    process = root / "42"
+    (process / "fd").mkdir(parents=True)
+    (process / "net").mkdir()
+    (process / "fd/7").symlink_to("socket:[123]")
+    for table in ("tcp", "tcp6", "udp", "udp6"):
+        (process / "net" / table).write_text(
+            "sl local_address rem_address st tx_queue tr retrnsmt uid timeout inode\n"
+        )
+    return process
+
+
+def socket_row(address="0100007F", port="1F90", state="0A", inode="123"):
+    return f"0: {address}:{port} 00000000:0000 {state} 00000000:00000000 00:00000000 00000000 1000 0 {inode}\n"
+
+
+def test_listener_binding_excludes_foreign_and_connected_peer_data(tmp_path):
+    process = listener_fixture(tmp_path)
+    p = process / "net/tcp"
+    with p.open("a") as f:
+        f.write(socket_row())
+        f.write(socket_row(inode="999"))
+        f.write(socket_row(state="01"))
+    result = inventory.process_listeners(process)
+    assert result["listeners"] == [
+        dict(protocol="tcp", family=4, port=8080, bind_scope="loopback")
+    ]
+    assert "remote" not in json.dumps(result) and result["unassessed"]
+
+
+def test_ipv6_wildcard_and_bound_udp_are_distinct(tmp_path):
+    process = listener_fixture(tmp_path)
+    for table, address, state in [("tcp6", "0" * 32, "0A"), ("udp", "00000000", "07")]:
+        with (process / "net" / table).open("a") as f:
+            f.write(socket_row(address=address, state=state))
+    result = inventory.process_listeners(process)
+    assert {
+        (v["protocol"], v["family"], v["bind_scope"]) for v in result["listeners"]
+    } == {("tcp", 6, "wildcard"), ("udp", 4, "wildcard")}
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "missing-table",
+        "oversized-table",
+        "malformed-table",
+        "descriptor-race",
+        "descriptor-cap",
+        "listener-cap",
+    ],
+)
+def test_incomplete_listener_observation_refuses_healthy_empty_result(tmp_path, gap):
+    process = listener_fixture(tmp_path)
+    p = process / "net/tcp"
+    if gap == "missing-table":
+        p.unlink()
+    elif gap == "oversized-table":
+        p.write_bytes(b"x" * (128 * 1024 + 1))
+    elif gap == "malformed-table":
+        p.write_text("no kernel table here\n")
+    elif gap == "descriptor-cap":
+        for i in range(1024):
+            (process / "fd" / str(100 + i)).symlink_to("/dev/null")
+    elif gap == "listener-cap":
+        with p.open("a") as f:
+            f.write(socket_row() * 129)
+    with (
+        patch.object(
+            inventory.os, "readlink", side_effect=["socket:[123]", "socket:[124]"]
+        )
+        if gap == "descriptor-race"
+        else patch.object(inventory, "MAX_OUTPUT", inventory.MAX_OUTPUT)
+    ):
+        with pytest.raises((ValueError, OSError)):
+            inventory.process_listeners(process)
+
+
+def test_actual_loopback_listener_is_observed_without_a_connection():
+    import socket
+
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        result = inventory.process_listeners(Path("/proc") / str(os.getpid()))
+    assert (
+        dict(protocol="tcp", family=4, port=port, bind_scope="loopback")
+        in result["listeners"]
+    )
+
+
 def component_fixture(root):
     binary=root/'usr/lib/chromium/chromium';binary.parent.mkdir(parents=True);binary.write_bytes(b'ELF fixture only')
     library=root/'usr/lib/x86_64-linux-gnu/libfreetype.so.6.20.2';library.parent.mkdir(parents=True);library.write_bytes(b'library fixture; never load')
@@ -183,3 +275,218 @@ def test_long_description_does_not_exhaust_bounded_header_read(tmp_path):
     assert result[0]['version']=='9.1'
     assert result[0]['metadata_header_sha256']==hashlib.sha256(headers).hexdigest()
     assert result[0]['metadata_file_bytes']>inventory.MAX_METADATA
+
+
+@pytest.fixture
+def selected_deployment(tmp_path, monkeypatch):
+    monkeypatch.setattr(inventory, 'TRUSTED_UID', os.getuid())
+    monkeypatch.setattr(inventory, 'PUBLIC_ROOTS', (tmp_path,))
+    root = tmp_path/'public-runtime'
+    root.mkdir()
+    proc = tmp_path/'proc'
+    proc.mkdir()
+    image = fixture_process(proc, 3, root/'python')
+    target = root/'native'
+    image.rename(target)
+    (proc/'3/exe').unlink()
+    (proc/'3/exe').symlink_to(target)
+    (proc/'3/cwd').symlink_to(root)
+    source = root/'app.py'
+    source.write_text('raise RuntimeError("public code must never execute")\n')
+    manifest = dict(schema='children-selected-deployments/v1', units={'own.service': dict(
+        root=str(root), bind='cwd', source_ref='App-source-qualified',
+        files={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()})})
+    monkeypatch.setattr(inventory, 'properties', lambda u:dict(ActiveState='active', MainPID='3'))
+    return root, proc, target, source, manifest
+
+
+def test_exact_source_and_loaded_image_binding_without_executing_source(selected_deployment):
+    root, proc, _target, _source, manifest = selected_deployment
+    cache=root/'__pycache__'
+    cache.mkdir()
+    (cache/'runtime.pyc').write_bytes(b'unqualified bytecode')
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    row=result['units']['own.service']
+    assert row['state']=='observed' and row['deployment']['state']=='verified'
+    assert row['deployment']['files']==2 and row['deployment']['loaded_main_executable'] is False
+    assert 'unassessed' in row['deployment']['meaning']
+    manifest['units']['own.service']['bind']='executable'
+    with patch.object(inventory,'MAX_FILE',sum(p.stat().st_size for p in root.iterdir() if p.is_file())):
+        result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['deployment']['loaded_main_executable'] is True
+    assert 'PRIVATE-MUST-NOT-BE-RETAINED' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('change',['content','extra','missing','symlink','writable','cwd','executable'])
+def test_changed_source_selection_never_becomes_verified(selected_deployment,change):
+    root, proc, target, source, manifest=selected_deployment
+    if change=='content':
+        source.write_text('changed')
+    elif change=='extra':
+        (root/'unrecorded.py').write_text('never execute')
+    elif change=='missing':
+        source.unlink()
+    elif change=='symlink':
+        source.unlink()
+        source.symlink_to(target)
+    elif change=='writable':
+        source.chmod(0o666)
+    elif change=='cwd':
+        (proc/'3/cwd').unlink()
+        (proc/'3/cwd').symlink_to(proc)
+    else:
+        manifest['units']['own.service']['bind']='executable'
+        outside=proc/'outside'
+        outside.write_bytes(target.read_bytes())
+        (proc/'3/exe').unlink()
+        (proc/'3/exe').symlink_to(outside)
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['state']=='unavailable'
+
+
+def test_same_pid_cwd_change_during_final_check_is_not_current_binding(selected_deployment,monkeypatch):
+    root,proc,_target,_source,manifest=selected_deployment
+    count=0
+    def properties(unit):
+        nonlocal count
+        count+=1
+        if count==2:
+            (proc/'3/cwd').unlink()
+            (proc/'3/cwd').symlink_to(proc)
+        return dict(ActiveState='active',MainPID='3')
+    monkeypatch.setattr(inventory,'properties',properties)
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['reason']=='selected_deployment_cwd_changed'
+
+
+@pytest.mark.parametrize('change',['escape','wrong-unit','bad-hash','capacity'])
+def test_manifest_bounds_apply_before_reading_source(selected_deployment,change):
+    _root,proc,_target,_source,manifest=selected_deployment
+    row=manifest['units']['own.service']
+    if change=='escape':
+        row['files']['../outside']='a'*64
+    elif change=='wrong-unit':
+        manifest['units']['other.service']=row
+    elif change=='bad-hash':
+        row['files']['app.py']='not-a-hash'
+    else:
+        row['files']={f'file-{i}':'a'*64 for i in range(1025)}
+    with pytest.raises(ValueError,match='selected_deployment_'):
+        inventory.collect(['own.service'],proc=proc,deployments=manifest)
+
+
+@pytest.fixture
+def selected_python_script(selected_deployment):
+    root,proc,target,source,manifest=selected_deployment
+    interpreter=proc/'python3.13'
+    target.rename(interpreter)
+    (proc/'3/exe').unlink()
+    (proc/'3/exe').symlink_to(interpreter)
+    (proc/'3/cwd').unlink()
+    (proc/'3/cwd').symlink_to(proc)
+    (proc/'3/cmdline').write_bytes(b'/usr/bin/python3\0-B\0-I\0'+os.fsencode(source)
+        +b'\0--private-setting\0PRIVATE-MUST-NOT-BE-RETAINED\0')
+    manifest['units']['own.service'].update(bind='python-script',
+        files={source.name:hashlib.sha256(source.read_bytes()).hexdigest()})
+    return root,proc,interpreter,source,manifest
+
+
+def test_actual_python_script_binding_needs_neither_public_cwd_nor_executing_source(selected_python_script):
+    root,proc,_target,source,manifest=selected_python_script
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    unit=result['units']['own.service']
+    assert unit['state']=='observed'
+    assert unit['deployment']['python_entrypoint']==source.name
+    assert unit['deployment']['loaded_main_executable'] is False
+    assert 'PRIVATE-MUST-NOT-BE-RETAINED' not in json.dumps(result)
+    assert not (root/'__pycache__').exists()
+
+
+@pytest.mark.parametrize('argv', [
+    [b'/usr/bin/python3',b'-c',b'PASS_SCRIPT_AS_LATER_ARGUMENT'],
+    [b'/usr/bin/python3',b'-m',b'app',b'PASS_SCRIPT_AS_LATER_ARGUMENT'],
+    [b'/usr/bin/python3',b'relative.py'],
+    [b'/usr/bin/python3',b'/foreign/app.py'],
+    [b'/usr/bin/python3',b'-B',b'-x',b'PASS_SCRIPT_AS_LATER_ARGUMENT'],
+    [b'/usr/bin/python3',b'x'*4097],
+])
+def test_python_options_or_foreign_script_never_prove_selected_deployment(selected_python_script,argv):
+    _root,proc,_target,source,manifest=selected_python_script
+    argv=[os.fsencode(source) if x==b'PASS_SCRIPT_AS_LATER_ARGUMENT' else x for x in argv]
+    (proc/'3/cmdline').write_bytes(b'\0'.join(argv)+b'\0')
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['state']=='unavailable'
+    assert 'deployment' not in result['units']['own.service']
+
+
+def test_same_pid_final_script_change_is_not_current_binding(selected_python_script,monkeypatch):
+    _root,proc,_target,_source,manifest=selected_python_script
+    calls=0
+    def properties(unit):
+        nonlocal calls
+        calls+=1
+        if calls==2:
+            (proc/'3/cmdline').write_bytes(b'/usr/bin/python3\0/foreign/script.py\0')
+        return dict(ActiveState='active',MainPID='3')
+    monkeypatch.setattr(inventory,'properties',properties)
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['state']=='unavailable'
+    assert result['units']['own.service']['reason']=='selected_deployment_python_script_changed'
+
+
+@pytest.fixture
+def selected_components(selected_deployment):
+    root, proc, target, source, manifest = selected_deployment
+    dependency = root.parent/'qualified-dependency'
+    dependency.mkdir()
+    module = dependency/'package.py'
+    module.write_text('raise RuntimeError("dependency must never execute")\n')
+    row = manifest['units']['own.service']
+    row['components'] = [dict(root=str(dependency), source_ref='published-wheel-sha256',
+        files={'package.py':hashlib.sha256(module.read_bytes()).hexdigest()})]
+    row['pythonpath'] = [str(dependency), str(root)]
+    (proc/'3/environ').write_bytes(('PRIVATE=must-not-retain\0PYTHONPATH='+':'.join(row['pythonpath'])+'\0').encode())
+    return root, proc, dependency, module, manifest
+
+
+def test_complete_selected_python_paths_are_hashed_without_importing_packages(selected_components):
+    _root, proc, _dependency, _module, manifest = selected_components
+    result = inventory.collect(['own.service'], proc=proc, deployments=manifest)
+    row = result['units']['own.service']
+    assert row['state'] == 'observed'
+    assert row['deployment']['pythonpath_verified'] is True
+    assert row['deployment']['components'] == [dict(state='verified',
+        source_ref='published-wheel-sha256',files=1)]
+    assert 'must-not-retain' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('change', ['changed-file','extra-file','symlink','writable','reordered-path','unselected-path'])
+def test_component_or_selected_path_change_cannot_report_verified(selected_components, change):
+    root, proc, dependency, module, manifest = selected_components
+    if change == 'changed-file':
+        module.write_text('changed')
+    elif change == 'extra-file':
+        (dependency/'unexpected.py').write_text('extra')
+    elif change == 'symlink':
+        module.unlink()
+        module.symlink_to(root/'app.py')
+    elif change == 'writable':
+        module.chmod(0o666)
+    else:
+        paths=[str(root),str(dependency)] if change=='reordered-path' else [str(root)]
+        (proc/'3/environ').write_bytes(('PYTHONPATH='+':'.join(paths)+'\0').encode())
+    result = inventory.collect(['own.service'], proc=proc, deployments=manifest)
+    assert result['units']['own.service']['state'] == 'unavailable'
+    assert 'deployment' not in result['units']['own.service']
+
+
+def test_component_read_rechecks_actual_process_search_path(selected_components, monkeypatch):
+    root, proc, dependency, _module, manifest = selected_components
+    verify = inventory.verify_tree
+    def change_after_read(row, hashed, check):
+        verify(row, hashed, check)
+        if row['root']==str(dependency):
+            (proc/'3/environ').write_bytes(('PYTHONPATH='+str(root)+'\0').encode())
+    monkeypatch.setattr(inventory,'verify_tree',change_after_read)
+    result = inventory.collect(['own.service'], proc=proc, deployments=manifest)
+    assert result['units']['own.service']['reason']=='selected_deployment_pythonpath_changed'

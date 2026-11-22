@@ -15,5 +15,5 @@ PrivateTmp=yes
 MemoryMax=128M
 CPUQuota=100%
 TasksMax=32
-TimeoutStartSec=25
+TimeoutStartSec=45
 LimitFSIZE=256K

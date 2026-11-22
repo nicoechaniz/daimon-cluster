@@ -22,6 +22,23 @@ def deadline():
     return time.monotonic_ns() + 2_000_000_000
 
 
+@pytest.mark.parametrize('exited', [False, True])
+def test_inspection_reports_exact_previous_parent_exit_without_lifecycle(fixture, monkeypatch, exited):
+    controller, manager, request = fixture[:3]
+    observed = {key:request['predecessor'][key] for key in ('process','admission_parent')}
+    previous = {**observed['admission_parent'], 'pid':121}
+    inspected = []
+    def exit_observation(value):
+        inspected.append(value)
+        return exited
+    monkeypatch.setattr(owner_process, 'observe_process_exit', exit_observation)
+    result = controller.inspect({**observed,'previous_admission_parent':previous}, deadline_ns=deadline())
+    assert result['previous_admission_parent'] == dict(process=previous, exited=exited)
+    assert inspected == [previous]
+    assert result['scope']['process'] == observed['process']
+    assert manager.stops == manager.starts == manager.reloads == 0
+
+
 def test_changed_frozen_dropin_bytes_prevent_first_stop(fixture):
     controller, manager, request = fixture[:3]
     request['predecessor']['service']['manager']['DropInPaths'] = '/maintained.conf'
@@ -870,7 +887,7 @@ def test_initial_service_cannot_treat_quiescence_query_as_start(initial):
 
 @pytest.mark.parametrize(
     "action",
-    ["bootstrap-inspect", "bootstrap-quiesce", "bootstrap-select", "bootstrap-start", "bootstrap-recover-start", "bootstrap-quiescence"],
+    ["bootstrap-inspect", "bootstrap-inspect-helper", "bootstrap-quiesce", "bootstrap-select", "bootstrap-start", "bootstrap-recover-start", "bootstrap-quiescence"],
 )
 def test_closed_root_cli_never_calls_install_or_owner_sdk(monkeypatch, capsys, action):
     import json
@@ -878,6 +895,9 @@ def test_closed_root_cli_never_calls_install_or_owner_sdk(monkeypatch, capsys, a
     from clusterctl.onboarding import digest
 
     selected = plan()
+    inspection_helper = action == 'bootstrap-inspect-helper'
+    if inspection_helper:
+        action = 'bootstrap-inspect'
     calls = []
     monkeypatch.setattr(onboarding_service.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
@@ -925,6 +945,10 @@ def test_closed_root_cli_never_calls_install_or_owner_sdk(monkeypatch, capsys, a
         "--action",
         action,
     ]
+    if inspection_helper:
+        implementation = '/opt/daimon-onboarding-runtime/' + 'f' * 64
+        monkeypatch.setattr(onboarding_service, '__file__', implementation + '/clusterctl/onboarding_service.py')
+        argv += ['--implementation-code', implementation, '--implementation-digest', 'f' * 64]
     if action != "bootstrap-inspect":
         request = {"plan_digest": digest(selected)}
         if action == 'bootstrap-recover-start':
@@ -1226,3 +1250,120 @@ def test_explicit_remaining_steady_authority_preserves_expired_original(initial,
     assert result['request_sha256'] == onboarding_service.digest(request)
     assert manager.starts == manager.reloads == 1 and manager.stops == 0
     assert controller.execute('steady', request, deadline_ns=deadline()) == result
+
+
+@pytest.mark.parametrize("runtime_update", [False, True])
+def test_existing_override_is_selected_and_started_without_touching_other_layers(
+    fixture, tmp_path, runtime_update, monkeypatch
+):
+    from clusterctl.onboarding import digest
+    controller, manager, request = fixture[:3]
+    directory = manager.unit.with_name(manager.unit.name + ".d")
+    directory.mkdir()
+    older = directory / "10-old-sdk.conf"
+    older.write_bytes(b"[Service]\nExecStart=\nExecStart=/older\n")
+    selected = directory / "90-current-sdk.conf"
+    selected.write_bytes(b"# retained\n[Service]\nExecStart=\nExecStart=/old\n")
+    if runtime_update:
+        selected.write_bytes(
+            b"# retained\n[Service]\nExecStart=\nExecStart=/native/python -B /old/location "
+            b"clusterctl.onboarding_target admitted-serve --runtime-code /old/location --runtime-digest "
+            + b"a" * 64
+            + b" --kept-setting value\n"
+        )
+        request["argv"] = [
+            "/different/python",
+            "clusterctl.onboarding_target",
+            "admitted-serve",
+            "--runtime-code",
+            "/new/location",
+            "--runtime-digest",
+            "b" * 64,
+        ]
+        request["runtime_update"] = True
+    for path in (older, selected):
+        path.chmod(0o644)
+    inspected = manager.inspect
+
+    def dropins(_):
+        return {
+            str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in (older, selected)
+        }
+
+    def observe(**options):
+        value = inspected(**options)
+        value["manager"]["DropInPaths"] = " ".join(str(p) for p in (older, selected))
+        value["dropins"] = dropins(None)
+        value["entrypoint_selector"] = dict(
+            path=str(selected), sha256=value["dropins"][str(selected)]
+        )
+        return value
+
+    manager.inspect = observe
+    manager._guest_dropins = dropins
+    request["predecessor"]["service"] = observe()
+    original_unit, original_old = manager.unit.read_bytes(), older.read_bytes()
+    original_selected = selected.read_bytes()
+    controller.execute("validate", request, deadline_ns=deadline())
+    controller.execute("quiesce", request, deadline_ns=deadline())
+    result = controller.execute("select", request, deadline_ns=deadline())
+    assert result["selected_sha256"] == hashlib.sha256(original_unit).hexdigest()
+    renderer = (
+        onboarding_service.runtime_entrypoint
+        if runtime_update
+        else onboarding_service.entrypoint
+    )
+    assert selected.read_bytes() == renderer(original_selected, request["argv"])
+    if runtime_update:
+        assert (
+            b"/native/python" in selected.read_bytes()
+            and b"--kept-setting value" in selected.read_bytes()
+        )
+    assert (
+        selected.with_name(selected.name + ".previous").read_bytes()
+        == original_selected
+    )
+    assert (
+        manager.unit.read_bytes() == original_unit
+        and older.read_bytes() == original_old
+    )
+    assert selected.read_bytes().count(b"\nExecStart=\n") == 1
+    assert controller.execute("select", request, deadline_ns=deadline()) == result
+    first = controller.execute("start", request, deadline_ns=deadline())
+    assert controller.execute("start", request, deadline_ns=deadline()) == first
+    assert manager.starts == manager.stops == 1
+    # An automatic restart must prove the selected override, not compare its
+    # bytes to the unchanged primary unit's digest.
+    parent = {**first['admission_parent'],'pid':322,'start_ticks':19}
+    child = {**parent,'pid':333,'start_ticks':20}
+    manager.exited[first['admission_parent']['pid']] = True
+    manager.invocation = 'override-successor'
+    original_inspect = manager.inspect
+    def successor_inspect(**options):
+        value = original_inspect(**options)
+        value['manager']['MainPID'] = str(parent['pid'])
+        return value
+    manager.inspect = successor_inspect
+    class Family:
+        def __init__(self, observed):
+            assert observed == child
+            self.process = dict(parent)
+        def __enter__(self):
+            return self
+        def __exit__(self,*_):
+            pass
+        def verify(self):
+            pass
+    monkeypatch.setattr(owner_process,'ParentProcessPresence',Family)
+    recovery = dict(schema='cluster-guest-start-recovery/v1',operation_id=str(uuid.uuid4()),
+        bootstrap=request,started_sha256=digest(first),
+        successor=dict(process=child,admission_parent=parent,service=manager.inspect()),
+        implementation_sha256='b'*64,expires_at_ms=time.time_ns()//1_000_000+60000)
+    recovered = controller.recover_start(recovery,deadline_ns=deadline())
+    assert recovered['predecessor_exited'] is True
+    assert controller.recover_start(recovery,deadline_ns=deadline()) == recovered
+    assert manager.starts == manager.stops == 1
+    selected.write_bytes(original_selected)
+    with pytest.raises(OnboardingError,match='successor_changed'):
+        controller.recover_start(recovery,deadline_ns=deadline())

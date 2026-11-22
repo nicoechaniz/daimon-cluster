@@ -92,13 +92,15 @@ def test_native_timeout_retains_uncertainty_without_relaunch(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize('kind', ['owner', 'observation'])
+@pytest.mark.parametrize('duration', [5, 180])
 @pytest.mark.parametrize('wall,expected_deadline', [(1000, 51_000_000_000), (1004, 47_000_000_000)])
 @pytest.mark.parametrize('preempt',[False,True])
-def test_real_remote_launcher_rebases_owner_clock_and_namespace(monkeypatch, wall, expected_deadline, kind, preempt):
+def test_real_remote_launcher_rebases_owner_clock_and_namespace(monkeypatch, wall, expected_deadline, kind, preempt, duration):
+    expected_deadline += (duration - 5) * 1_000_000_000
     request = dict(machine_id_sha256=hashlib.sha256(b'fixture machine').hexdigest(),
         argv=(['owner', '--deadline-ns', '999999999999999', '--time-namespace', 'sender-kernel']
             if kind=='owner' else ['owner','--observation-deadline-ns','999999999999999']),
-        owner_clock=True, remaining_seconds=5, expires_at_ms=1_005_000,
+        owner_clock=True, remaining_seconds=duration, expires_at_ms=1_000_000 + duration * 1000,
         uid=1000, gid=1000, home='/home/agent', env={'HOME': '/home/agent'})
     calls = []
     class ExecObserved(Exception):
@@ -207,7 +209,9 @@ def test_inc_state_executor_retains_existing_typed_execution(tmp_path):
     assert result['kwargs']['timeout_seconds'] == 2
 
 
-def test_public_code_transfer_resumes_retained_stage_after_timeout(tmp_path, monkeypatch):
+@pytest.mark.parametrize('duration', [None, 240])
+def test_public_code_transfer_resumes_retained_stage_after_timeout(tmp_path, monkeypatch, duration):
+    deadline = None if duration is None else time.monotonic_ns() + duration * 1_000_000_000
     locator, _ = placement(tmp_path, {'name': 'eko'})
     body = native_body.NativeBody.load(locator, {'name': 'eko'})
     monkeypatch.setattr(native_body.onboarding_release, 'verify', lambda *args, **kwargs: {})
@@ -221,6 +225,9 @@ def test_public_code_transfer_resumes_retained_stage_after_timeout(tmp_path, mon
             published.append(True)
         return ''
     def transfer(argv, **kwargs):
+        assert 0 < kwargs['timeout'] <= (60 if duration is None else duration)
+        if duration is not None:
+            assert kwargs['timeout'] > 60
         transfers.append(argv)
         if len(transfers) == 1:
             raise subprocess.TimeoutExpired('public artifact transfer', 1)
@@ -229,10 +236,10 @@ def test_public_code_transfer_resumes_retained_stage_after_timeout(tmp_path, mon
     monkeypatch.setattr(native_body.NativeBody, 'execute', execute)
     monkeypatch.setattr(native_body.subprocess, 'run', transfer)
     with pytest.raises(OnboardingError, match='receiving_host_deadline_expired'):
-        body.prepare_code(tmp_path / 'qualified-public-code', 'a' * 64)
+        body.prepare_code(tmp_path / 'qualified-public-code', 'a' * 64, deadline_ns=deadline)
     progress = next((tmp_path / 'native.json.preparations').glob('*.json'))
     retained = progress.read_bytes()
-    assert body.prepare_code(tmp_path / 'qualified-public-code', 'a' * 64) == Path('/opt/daimon-onboarding-runtime') / ('a' * 64)
+    assert body.prepare_code(tmp_path / 'qualified-public-code', 'a' * 64, deadline_ns=deadline) == Path('/opt/daimon-onboarding-runtime') / ('a' * 64)
     assert progress.read_bytes() == retained
     assert transfers[0][-1] == transfers[1][-1]
     assert '--checksum' in transfers[1] and '--delete' not in transfers[1]

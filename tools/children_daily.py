@@ -217,8 +217,9 @@ print(json.dumps(value))
 
 def validate_application_selection(selection):
     if (not isinstance(selection,dict) or not {'helper','sha256','units'}<=set(selection)
-            or set(selection)-{'helper','sha256','units','browser_components'}
-            or type(selection.get('browser_components',False)) is not bool):
+            or set(selection)-{'helper','sha256','units','browser_components','deployment_manifests','network_listeners'}
+            or type(selection.get('browser_components',False)) is not bool
+            or type(selection.get('network_listeners',False)) is not bool):
         raise ValueError('explicit_application_selection_required')
     validate_browser_selection({k:selection[k] for k in ('helper','sha256')})
     units=selection['units']
@@ -230,6 +231,17 @@ def validate_application_selection(selection):
                 or any(not isinstance(n,str) or not re.fullmatch(r'[A-Za-z0-9_.@:-]{1,120}\.service',n) for n in names)
                 or len(set(names))!=len(names)):
             raise ValueError('bounded_application_units_required')
+    manifests = selection.get('deployment_manifests', {})
+    if (not isinstance(manifests, dict) or not set(manifests) <= set(units)):
+        raise ValueError('explicit_deployment_manifests_required')
+    for reference in manifests.values():
+        if (not isinstance(reference, dict) or set(reference) != {'path', 'sha256'}
+                or not isinstance(reference['path'], str) or not Path(reference['path']).is_absolute()
+                or '..' in Path(reference['path']).parts
+                or not Path(reference['path']).is_relative_to('/etc/children-maintenance')
+                or not isinstance(reference['sha256'], str)
+                or re.fullmatch('[a-f0-9]{64}', reference['sha256']) is None):
+            raise ValueError('explicit_deployment_manifests_required')
 
 
 def application_inventory(name, instance, selection):
@@ -245,7 +257,14 @@ if hashlib.sha256(p.read_bytes()).hexdigest()!=selection['sha256']:raise ValueEr
 spec=importlib.util.spec_from_file_location('selected_application_reader',p)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 options={'include_browser_components':True} if selection.get('browser_components') and name!='lordoftheflies' else {}
-print(json.dumps(m.collect(selection['units'][name],**options),sort_keys=True))
+if selection.get('network_listeners'):options['include_network_listeners']=True
+reference=selection.get('deployment_manifests',{}).get(name)
+if reference is not None:options['deployments']=m.load_deployments(reference['path'],reference['sha256'],selection['units'][name])
+value=m.collect(selection['units'][name],**options)
+if reference is not None:
+ value['deployment_manifest_sha256']=reference['sha256']
+ value['deployment_selection_units']=sorted(options['deployments']['units'])
+print(json.dumps(value,sort_keys=True))
 '''
     argv=['systemd-run','--unit=children-application-inventory-daily','--collect','--pipe','--wait',
           '-p','RuntimeMaxSec=40','-p','MemoryMax=128M','-p','CPUQuota=25%','-p','TasksMax=32',
@@ -397,6 +416,65 @@ def known_exploitation(selection, candidates, report, root):
     return result
 
 
+def selected_malicious_observation(public):
+    """Project existing OSV MAL leads; no second feed, scan or network request.
+
+    This covers declared selected public PyPI versions only. It is not artifact
+    authenticity, actual loaded code, unselected software or a clean-system claim.
+    A retained last-success timestamp is never a current successful assessment.
+    """
+    import datetime as dt
+    import re
+    incomplete = {'state': 'incomplete', 'applicability': 'unavailable',
+                  'scope': 'selected-public-PyPI-versions'}
+    if not isinstance(public, dict) or public.get('state') != 'matched':
+        return incomplete
+    queries, records = public.get('public_queries'), public.get('records')
+    groups, pin = public.get('active_alias_groups'), public.get('query_sha256')
+    if (not isinstance(queries, list) or not 1 <= len(queries) <= 64
+            or not isinstance(records, list) or len(records) > 32
+            or not isinstance(groups, list) or len(groups) > 32
+            or type(public.get('checked')) is not int or public['checked'] <= 0
+            or pin != hashlib.sha256(json.dumps(queries, sort_keys=True).encode()).hexdigest()):
+        return incomplete
+    identifier = re.compile(r'[A-Za-z0-9][-A-Za-z0-9._:]{0,100}')
+    malicious = re.compile(r'MAL-[0-9]{4}-[0-9]+')
+    active, withdrawn, seen = set(), set(), set()
+    for row in records:
+        if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                or not identifier.fullmatch(row['id']) or row['id'] in seen
+                or not isinstance(row.get('aliases'), list) or len(row['aliases']) > 16
+                or any(not isinstance(a, str) or not identifier.fullmatch(a) for a in row['aliases'])
+                or row.get('withdrawn') is not None and not isinstance(row['withdrawn'], str)):
+            return incomplete
+        if row.get('withdrawn') is not None:
+            try:
+                if dt.datetime.fromisoformat(row['withdrawn'].replace('Z', '+00:00')).tzinfo is None:
+                    return incomplete
+            except ValueError:
+                return incomplete
+        seen.add(row['id'])
+        if any(malicious.fullmatch(value) for value in [row['id'], *row['aliases']]):
+            (active if row.get('withdrawn') is None else withdrawn).add(row['id'])
+    active_groups, grouped = [], set()
+    for group in groups:
+        if (not isinstance(group, list) or not group or len(group) > 32
+                or any(not isinstance(item, str) or item not in seen or item in grouped for item in group)
+                or len(set(group)) != len(group)):
+            return incomplete
+        grouped.update(group)
+        if set(group) & active:
+            active_groups.append(sorted(group))
+    if not active <= grouped or withdrawn & grouped:
+        return incomplete
+    return {'state': 'observed', 'applicability': 'pending' if active else 'no-selected-triage',
+            'scope': 'selected-public-PyPI-versions', 'source': 'existing-OSV-version-query',
+            'checked': public['checked'], 'query_sha256': pin, 'selected_version_count': len(queries),
+            'active_record_ids': sorted(active), 'active_alias_groups': sorted(active_groups),
+            'withdrawn_record_ids': sorted(withdrawn), 'needs_triage': bool(active),
+            'meaning': 'Reported malicious releases for declared versions; artifact and loaded exposure remain unassessed'}
+
+
 def phase_observations(config, report):
     """Describe this occurrence, never infer another producer's acceptance.
 
@@ -440,6 +518,45 @@ def phase_observations(config, report):
                            'applicability': 'pending' if value.get('needs_triage') is True
                                else 'no-selected-triage' if value.get('needs_triage') is False
                                and value.get('state') == 'matched' else 'unavailable'}
+    manifests = config.get('application_inventory', {}).get('deployment_manifests', {})
+    selected, observed, unselected_units = set(manifests), [], []
+    for name, units in config.get('application_inventory', {}).get('units', {}).items():
+        inventory = report.get('targets', {}).get(name, {}).get('applications', {})
+        requested = inventory.get('deployment_selection_units', []) if name in manifests else []
+        if not isinstance(requested, list) or any(not isinstance(unit, str) for unit in requested):
+            requested = []
+        if (name in manifests and inventory.get('state') == 'observed' and requested
+                and set(requested) <= set(units)
+                and inventory.get('deployment_manifest_sha256') == manifests[name]['sha256']
+                and all(inventory.get('units', {}).get(unit, {}).get('state') == 'observed'
+                        and inventory['units'][unit].get('deployment', {}).get('state') == 'verified'
+                        for unit in requested)):
+            observed.append(name)
+        unselected_units.extend(name + ':' + unit for unit in units if unit not in requested)
+    phases['selected_deployments'] = {
+        'state': 'not-selected' if not manifests else 'observed' if set(observed) == selected else 'incomplete',
+        'observed_targets': sorted(observed), 'unavailable_targets': sorted(selected - set(observed)),
+        'unselected_units': sorted(unselected_units),
+        'scope': 'Selected file hashes/process association; imported Python modules and dependencies remain unassessed'}
+    phases['selected_public_python_malicious'] = (
+        selected_malicious_observation(report.get('public_advisories', {}))
+        if config.get('public_advisories') else {'state': 'not-selected'})
+    network_selected = config.get('application_inventory', {}).get('network_listeners', False)
+    network_observed = []
+    for name in targets if network_selected else []:
+        app = report['targets'].get(name, {}).get('applications', {})
+        units = app.get('units', {})
+        required = config['application_inventory']['units'][name]
+        if (app.get('state') == 'observed' and isinstance(units, dict) and set(units) == set(required)
+                and all(isinstance(v, dict) and v.get('state') == 'observed'
+                    and isinstance(v.get('network_listeners'), dict)
+                    and v['network_listeners'].get('state') == 'observed' for v in units.values())):
+            network_observed.append(name)
+    phases['selected_main_process_listeners'] = {
+        'state': 'not-selected' if not network_selected else 'observed' if targets and set(network_observed) == targets else 'incomplete',
+        'observed_targets': sorted(network_observed),
+        'unavailable_targets': sorted(targets-set(network_observed)) if network_selected else [],
+        'scope': 'Selected main-process TCP listeners/bound UDP; not worker descendants or external reachability'}
     return phases
 
 
@@ -551,6 +668,9 @@ def collect(config):
         if config.get('known_exploitation'):
             report['known_exploitation']=known_exploitation(config['known_exploitation'],kev_candidates,report,root)
         report['phases'] = phase_observations(config, report)
+        if report['phases']['selected_public_python_malicious']['state'] == 'observed':
+            report['unassessed'].remove('malicious-release-advisories')
+            report['unassessed'].append('malicious-releases-outside-selected-public-Python-versions')
         report['finished'] = int(time.time())
         raw = json.dumps(report, sort_keys=True).encode()
         if len(raw) > 256*1024 or footprint(root) > 512*MIB:
@@ -572,7 +692,10 @@ def observation_complete(result):
         and value.get('applications',{}).get('state','observed')=='observed'
         for value in result['targets'].values()) and
         result.get('public_advisories',{}).get('state','matched')=='matched' and
-        result.get('known_exploitation',{}).get('state','matched')=='matched')
+        result.get('known_exploitation',{}).get('state','matched')=='matched' and
+        result.get('phases',{}).get('selected_public_python_malicious',{}).get('state')!='incomplete' and
+        result.get('phases',{}).get('selected_main_process_listeners',{}).get('state')!='incomplete' and
+        result.get('phases',{}).get('selected_deployments',{}).get('state')!='incomplete')
 
 
 def main():

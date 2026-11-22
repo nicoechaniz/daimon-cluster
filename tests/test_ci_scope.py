@@ -1637,3 +1637,28 @@ def test_public_advisory_phase_has_closed_scope():
         'tests/test_children_daily.py','tests/test_children_application_inventory.py',
         'tests/test_children_browser.py','tests/test_ci_scope.py','tests/test_ci_workflow.py'])
     assert select(changed+['clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
+def test_read_only_incus_provenance_keeps_signed_index_and_archive_consumers(tmp_path):
+    changed=['tools/children_incus_provenance.py','tests/test_children_incus_provenance.py',
+        'tools/ci_scope.py','tests/test_ci_scope.py','docs/operations/children-application-inventory.md','RESUME.md']
+    profile,tests=select(changed,ROOT)
+    assert profile=='peer'
+    assert {'tests/test_children_incus_provenance.py','tests/test_children_package_selection.py',
+        'tests/test_children_package_guard.py','tests/test_children_application_inventory.py',
+        'tests/test_children_daily.py'}<=set(tests)
+    assert select(changed,tmp_path)==('full',['tests'])
+    assert select([*changed,'clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
+def test_visibility_rollout_keeps_operator_and_existing_owner_contracts(tmp_path):
+    changed=['tools/tribe_visibility.py','tests/test_tribe_visibility.py',
+             'docs/operations/tribe-visibility.md','tools/ci_scope.py','tests/test_ci_scope.py']
+    profile,tests=select(changed,ROOT)
+    assert profile=='peer'
+    assert {'tests/test_tribe_visibility.py','tests/test_native_code_maintenance_cli.py',
+            'tests/test_onboarding_owner_control.py','tests/test_ci_workflow.py'}<=set(tests)
+    assert select(changed,tmp_path)==('full',['tests'])
+    for extra in ('clusterctl/onboarding_managed.py','clusterctl/rebirth_native.py',
+                  'clusterctl/onboarding_sdk.py','clusterctl/onboarding_host.py','unknown.py'):
+        assert select([*changed,extra],ROOT)==('full',['tests'])

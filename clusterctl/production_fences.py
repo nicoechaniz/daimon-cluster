@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import stat
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,9 @@ _OPERATIONS = frozenset({"acquire", "renew", "release"})
 MAX_AUTHORIZATION_TTL_S = 300
 MAX_FENCE_TTL_S = 3600
 MAX_CLOCK_SKEW_MS = 5_000
+EVENT_HISTORY_KEEP = 256
+EVENT_RETIREMENT_BATCH = 32
+EVENT_RETIREMENT_SCHEMA = "resource-fence-event-retirement/v1"
 
 
 def _json(value: dict[str, Any]) -> str:
@@ -410,6 +414,10 @@ class ProductionFenceStore:
                     committed_ms INTEGER NOT NULL,
                     PRIMARY KEY (resource_ref, epoch)
                 ) STRICT;
+                CREATE TABLE IF NOT EXISTS event_retirement (
+                    resource_ref TEXT PRIMARY KEY,
+                    checkpoint_json TEXT NOT NULL
+                ) STRICT;
                 """
             )
             connection.execute("BEGIN IMMEDIATE")
@@ -777,18 +785,97 @@ class ProductionFenceStore:
                 evidence["created_ms"],
             ),
         )
+        self._retire_events(connection, evidence["resource_ref"], evidence["epoch"])
+
+    def _verify_historical_signature(self, connection: sqlite3.Connection,
+                                     record: dict[str, Any]) -> None:
+        # Historical audit evidence is not current authority. This checks the
+        # attributed signature, not whether it predates a later revocation.
+        # Current-position verification still rejects every revoked key.
+        key = connection.execute("SELECT public_key FROM signing_keys WHERE key_id=?",
+                                 (record.get("signing_key_id"),)).fetchone()
+        signature = record.get("signature")
+        if (key is None or not isinstance(signature, str)
+                or not _verify_ed25519(_canonical(record), signature, key["public_key"])):
+            raise InvalidSignature("invalid historical resource fence signature")
+
+    def _retire_events(self, connection: sqlite3.Connection, resource: str,
+                       high_water: int) -> int:
+        rows = connection.execute(
+            "SELECT * FROM events WHERE resource_ref=? AND epoch<=? "
+            "ORDER BY epoch LIMIT ?",
+            (resource, high_water - EVENT_HISTORY_KEEP, EVENT_RETIREMENT_BATCH),
+        ).fetchall()
+        if not rows:
+            return 0
+        previous = connection.execute(
+            "SELECT checkpoint_json FROM event_retirement WHERE resource_ref=?",
+            (resource,),
+        ).fetchone()
+        count, through, chain = 0, -1, "0" * 64
+        if previous is not None:
+            checkpoint = json.loads(previous["checkpoint_json"])
+            self._verify_historical_signature(connection, checkpoint)
+            if (checkpoint.get("schema") != EVENT_RETIREMENT_SCHEMA
+                    or checkpoint.get("resource_ref") != resource
+                    or set(checkpoint) != {"schema", "resource_ref", "retired_events",
+                        "through_epoch", "chain_sha256", "signing_key_id", "signature"}
+                    or type(checkpoint["retired_events"]) is not int
+                    or checkpoint["retired_events"] < 1
+                    or type(checkpoint["through_epoch"]) is not int
+                    or not 0 <= checkpoint["through_epoch"] < rows[0]["epoch"]
+                    or not isinstance(checkpoint["chain_sha256"], str)
+                    or len(checkpoint["chain_sha256"]) != 64):
+                raise FenceError("resource fence retirement binding changed")
+            count, through, chain = (checkpoint["retired_events"],
+                                    checkpoint["through_epoch"], checkpoint["chain_sha256"])
+        for row in rows:
+            evidence = json.loads(row["evidence_json"])
+            self._verify_historical_signature(connection, evidence)
+            if (row["epoch"] <= through or evidence.get("epoch") != row["epoch"]
+                    or evidence.get("resource_ref") != resource
+                    or evidence.get("operation") != row["operation"]
+                    or evidence.get("created_ms") != row["committed_ms"]
+                    or _proof_ref(evidence) != row["proof"]):
+                raise FenceError("resource fence retirement evidence changed")
+            chain = hashlib.sha256(bytes.fromhex(chain) + _json(dict(row)).encode()).hexdigest()
+            count, through = count + 1, row["epoch"]
+        assert self._signer is not None
+        checkpoint = dict(schema=EVENT_RETIREMENT_SCHEMA, resource_ref=resource,
+                          retired_events=count, through_epoch=through, chain_sha256=chain,
+                          signing_key_id=self._key_id)
+        checkpoint["signature"] = self._signer.sign(_canonical(checkpoint))
+        connection.execute(
+            "INSERT INTO event_retirement VALUES(?,?) ON CONFLICT(resource_ref) "
+            "DO UPDATE SET checkpoint_json=excluded.checkpoint_json",
+            (resource, _json(checkpoint)),
+        )
+        connection.executemany("DELETE FROM events WHERE resource_ref=? AND epoch=?",
+                               [(resource, row["epoch"]) for row in rows])
+        return len(rows)
 
     def _mutate(
-        self, callback: Callable[[sqlite3.Connection], dict[str, Any]]
+        self, callback: Callable[[sqlite3.Connection], dict[str, Any]],
+        *, deadline_ns: int | None = None,
     ) -> dict[str, Any]:
         self._hook("before-begin")
         try:
             connection = self._connect()
+            if deadline_ns is not None:
+                if time.monotonic_ns() >= deadline_ns:
+                    raise FenceError("resource fence maintenance deadline expired")
+                # Maintenance never inherits the ordinary10s lock wait. The
+                # query hook also interrupts an old-history scan at its budget.
+                remaining_ms = max(1, (deadline_ns - time.monotonic_ns()) // 1_000_000)
+                connection.execute(f"PRAGMA busy_timeout = {min(100, remaining_ms)}")
+                connection.set_progress_handler(lambda: time.monotonic_ns() >= deadline_ns, 100)
             connection.execute("PRAGMA synchronous = FULL")
             connection.execute("BEGIN IMMEDIATE")
             self._hook("after-begin")
             self._assert_active_signer(connection)
             evidence = callback(connection)
+            if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+                raise FenceError("resource fence maintenance deadline expired")
             self._hook("before-commit")
             connection.commit()
             self._hook("after-commit")
@@ -1547,10 +1634,26 @@ class ProductionFenceStore:
                 connection.close()
         return [self.status(resource) for resource in resources]
 
-    def collect_garbage(self) -> int:
-        """Production history/tombstones are authoritative and never garbage."""
+    def collect_garbage(self, *, deadline_ns: int | None = None) -> int:
+        """Retire at most32 historical events; never delete a position/tombstone.
 
-        return 0
+        Ordinary position commits perform the same bounded catch-up. Existing
+        large histories can be drained through this owning method without one
+        unbounded DELETE, VACUUM, snapshot, lease change or background worker.
+        SQLite reuses the freed pages; this does not shrink the file itself.
+        """
+        def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = connection.execute(
+                "SELECT * FROM positions p WHERE EXISTS "
+                "(SELECT 1 FROM events e WHERE e.resource_ref=p.resource_ref "
+                "AND e.epoch<=p.high_water-?) ORDER BY resource_ref LIMIT 1",
+                (EVENT_HISTORY_KEEP,),
+            ).fetchone()
+            if row is None:
+                return {"retired": 0}
+            self._verify_position(connection, row)
+            return {"retired": self._retire_events(connection, row["resource_ref"], row["high_water"])}
+        return int(self._mutate(mutation, deadline_ns=deadline_ns)["retired"])
 
     def restore(self, resource_ref: str, value: dict[str, Any]) -> None:
         del resource_ref, value

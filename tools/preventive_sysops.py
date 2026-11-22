@@ -19,8 +19,10 @@ import time
 
 try:
     from .children_daily import atomic, command
+    from .model_family_upgrades import model_evidence, plan as model_plan
 except ImportError:
     from children_daily import atomic, command
+    from model_family_upgrades import model_evidence, plan as model_plan
 
 MAX_TARGETS = 16
 MAX_JOBS = 64
@@ -128,7 +130,7 @@ def private(path):
 
 def validate(value):
     if (
-        set(value) != {"schema", "state", "paused", "targets"}
+        set(value) - {"model_evidence"} != {"schema", "state", "paused", "targets"}
         or value["schema"] != "cluster.preventive-sysops/v1"
         or type(value["paused"]) is not bool
     ):
@@ -138,6 +140,10 @@ def validate(value):
         or not Path(value["state"]).is_absolute()
     ):
         raise ValueError("sysops_capacity")
+    if "model_evidence" in value and (
+        not isinstance(value["model_evidence"], str) or not Path(value["model_evidence"]).is_absolute()
+    ):
+        raise ValueError("absolute_model_evidence_path_required")
     ids = set()
     count = 0
     for t in value["targets"]:
@@ -248,6 +254,20 @@ def run_pass(config, *, run=command):
             save(receipt, result)
             return result
         started = time.monotonic()
+        if "model_evidence" in config:
+            try:
+                result["model_upgrades"] = model_plan(
+                    model_evidence(config["model_evidence"]),
+                    {target["id"] for target in config["targets"]},
+                )
+            except (OSError, ValueError, TypeError):
+                result["semantic"]["model_upgrades"] = "evidence-unavailable"
+            else:
+                for key, item in result["model_upgrades"].items():
+                    result["semantic"]["model:" + key] = {
+                        field: item[field] for field in ("current", "candidate", "state")
+                        if field in item
+                    }
         dispatches = 0
         for t in config["targets"]:
             if time.monotonic() - started > 210:

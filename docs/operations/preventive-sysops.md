@@ -89,6 +89,44 @@ invocation IDs triggering model attention. Initial inventory, durable action
 mechanics, registered remediation coverage and actual recurring useful execution
 must each have receiving evidence. Unsupported adapters remain unfinished work.
 
+## Model family upgrades
+
+Workload owners select a model family and a compatibility contract. Keep the
+concrete serving revision in the existing owner configuration, alongside the
+last verified revision. Record the account binding, provider endpoint, model
+family, required reasoning effort, modalities, tools, and isolation controls.
+Each workload can follow its family or retain an explicit pin. Preserve existing
+pins, including experiment controls and outstanding operations.
+
+Use the existing preventive Sysops cadence to evaluate trusted OpenAI release
+metadata against each receiver's own model catalog. Order known versions inside
+the explicitly declared family. A model name, release note, or availability on
+another account cannot establish a valid successor. Unknown versions and
+alternative modalities remain visible candidates until the adapter establishes
+compatibility. Report an unchanged catalog as a no-op.
+
+Use the receiving owner's prepare, apply, and status operations. Prepare against
+the exact source/config revision and real receiver, checking the existing CLI,
+effort, endpoint, capabilities and access. Qualify affected behavior with
+bounded fixtures or a scoped canary when authorized. Apply a previously qualified
+candidate to eligible receivers through their existing owner writers and recheck
+loaded configuration and successful use. Bind the receipt to the predecessor and
+candidate. A stale preimage or unresolved dispatch stops that receiving change.
+
+Start with a compatible receiver that can adopt safely. Expand through the same
+qualified contract. Switch new work at its normal admission boundary and let
+active turns finish with their original model. Each existing operation keeps its
+original account, identity, budgets, input, request digest and policy. Leave a
+known-good revision available for future work if the new revision fails. A failed
+or uncertain request stays with its journal and is never automatically replayed.
+Pause new admissions through Sysops while preserving already admitted work.
+
+An example is native DMK review, which follows Sol at low effort with tools and
+native memory disabled. An otherwise supported Sol release is ineligible until
+that receiver has a suitable CLI and tool-disabled catalog. This contract is a
+design for existing owner adapters. It does not schedule new polling or imply
+that automatic selection is already installed.
+
 ## Initial receiving evidence —22November2026
 
 The finite pass actually observed all nine selected targets in5.4seconds. Each

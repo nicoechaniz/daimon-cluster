@@ -225,10 +225,12 @@ ID and `previous` equal to the actual current code digest. State schema and data
 directory remain unchanged. Unknown unit/route replacement is preserved. Keep
 current, predecessor and one candidate release (at most 384 MiB code); verified
 older code is pruned on later selection. Pending dispatches prevent pruning.
-Receiving receipts stop at 128 (at most 2 MiB per receipt); central journal stops
-at 128 operations. At the limit the owner gets a retained failure and Homes must
-use the owning retention path before new work; do not reset history or operation
-identities. Ordinary own Home publication history keeps its existing policy.
+Receiving receipts stop at 128 (at most 2 MiB per receipt). The central
+journal admits 128 operations per Home, owner and service identity and up to
+4,096 operations across the 32 supported grants. Admission and counting share
+one write transaction. Exact retries still read their original records after
+capacity is reached. Retain operation identities and their receipts when
+planning lifecycle retention. Ordinary own Home publication history keeps its existing policy.
 
 ## First receiving cases and remaining acceptance
 

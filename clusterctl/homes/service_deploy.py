@@ -8,12 +8,16 @@ import re
 import subprocess
 from urllib.parse import quote, urlsplit
 
-from ..operation_journal import OperationJournal
+from ..operation_journal import JournalCapacity, OperationJournal
 from ..onboarding_conversation_routes import Routes, LIMIT, configuration as route_configuration
 from .policy import validate_audience
 from .service_package import (MAX_ARCHIVE, RESERVED, canonical, closed, exact, path,
                               request, sha, unpack)
 from .service_runtime import receiver, key
+
+
+MAX_GRANTS = 32
+OPERATIONS_PER_SERVICE = 128
 
 
 @closed
@@ -22,7 +26,7 @@ def configuration(value):
     if value['schema'] != 'dm.home-service-capabilities/v1':
         raise ValueError('invalid_service_deploy_configuration')
     path(value['state'])
-    if not isinstance(value['grants'], list) or len(value['grants']) > 32:
+    if not isinstance(value['grants'], list) or len(value['grants']) > MAX_GRANTS:
         raise ValueError('service_grant_capacity')
     identities, prefixes, listeners, units, route_states, locations = set(), set(), set(), set(), set(), []
     for g in value['grants']:
@@ -225,17 +229,23 @@ class Deployments:
                 or not any(e['artifact_ref'] == package['resource'] for e in app.publication(home)['entries'])):
             raise ValueError('service_own_committed_package_required')
         with app.locks[home]:
-            if len(self.journal.list_all(limit=129)) >= 128 and not self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id']):
-                raise ValueError('service_operation_capacity')
-            previous_op = self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
-            if previous_op and not runtime_call_matches(previous_op['intent']['runtime_call'], g, value):
+            target = key(c)
+            request_key = target + ':' + value['request_id']
+            op = self.journal.latest_for_idempotency_key(request_key)
+            call = {'grant': sha(canonical(g)), 'request': value}
+            if op and not runtime_call_matches(op['intent']['runtime_call'], g, value):
                 raise ValueError('service_request_conflict')
-            op = previous_op or self.journal.plan(operation='home-service-deploy/v1', target=key(c),
-                    idempotency_key=key(c)+':'+value['request_id'],
-                    intent={'runtime_call': {'grant': sha(canonical(g)), 'request': value}},
-                    expected_precondition={'digest': value['previous']},
-                    intended_transition={'digest': package['sha256']},
-                    audit_identity={'home': home, 'owner': owner.ref})
+            if not op:
+                try:
+                    op = self.journal.plan(operation='home-service-deploy/v1', target=target,
+                        idempotency_key=request_key, intent={'runtime_call': call},
+                        expected_precondition={'digest': value['previous']},
+                        intended_transition={'digest': package['sha256']},
+                        audit_identity={'home': home, 'owner': owner.ref},
+                        target_limit=OPERATIONS_PER_SERVICE,
+                        journal_limit=MAX_GRANTS * OPERATIONS_PER_SERVICE)
+                except JournalCapacity as exc:
+                    raise ValueError('service_operation_capacity') from exc
             with self.journal.mutation_lock(op['operation_id']):
                 if op['state'] == 'completed':
                     return {**op['result'], 'retained': True}

@@ -782,3 +782,33 @@ def test_added_guard_compatibility_does_not_accept_any_other_grant_change(setup)
     changed = deepcopy(expanded)
     changed['routes']['maintenance'].append(guard_fixture('second-added'))
     assert not grant_matches_recorded(recorded, changed)
+
+
+def test_one_services_receipts_do_not_consume_anothers_deployment_capacity(setup, tmp_path, monkeypatch):
+    _, _, conf, raw, _, artifact, value = setup
+    app, _ = app_fixture(tmp_path, conf, raw, artifact)
+    deployments = app.service_deployments
+    monkeypatch.setattr("clusterctl.homes.service_deploy.OPERATIONS_PER_SERVICE", 1)
+    other = deployments.journal.plan(
+        operation="home-service-deploy/v1", target="other-service", idempotency_key="other:release",
+        intent={}, expected_precondition={}, intended_transition={}, audit_identity={},
+    )
+    deployments.journal.advance(other["operation_id"], "completed")
+    calls = []
+
+    def execute(_grant, selected, package=None):
+        calls.append((selected["request_id"], package is not None))
+        return {"state": "uncertain", "digest": selected["package"]["sha256"]}
+
+    monkeypatch.setattr(deployments, "execute", execute)
+    assert app.owner("one", "own-test-token", "service-deploy", value)["state"] == "uncertain"
+    assert app.owner("one", "own-test-token", "service-deploy", value)["state"] == "uncertain"
+    with pytest.raises(ValueError, match="service_operation_capacity"):
+        app.owner("one", "own-test-token", "service-deploy", dict(value, request_id="next-release"))
+    selected = deployments.journal.latest_for_idempotency_key(
+        key(conf["grants"][0]["receiver"]) + ":" + value["request_id"]
+    )
+    deployments.journal.advance(selected["operation_id"], "completed", result={"state": "complete"})
+    assert app.owner("one", "own-test-token", "service-deploy", value)["retained"] is True
+    assert calls == [(value["request_id"], True), (value["request_id"], False)]
+    assert deployments.journal.get(other["operation_id"])["state"] == "completed"

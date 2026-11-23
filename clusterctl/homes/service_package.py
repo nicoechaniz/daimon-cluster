@@ -14,6 +14,8 @@ from ..onboarding_release import inventory, regular
 MAX_ARCHIVE = 32 * 1024**2
 MAX_UNPACKED = 128 * 1024**2
 MAX_FILES = 4096
+DEFAULT_SERVICE_RECEIPTS = 128
+MAX_SERVICE_RECEIPTS = 256
 HEX = re.compile(r'[a-f0-9]{64}')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,47}')
 RESERVED = {'access', 'interaction', 'cluster', 'owner', 'api', 'r', 'view', 'works',

@@ -225,10 +225,14 @@ ID and `previous` equal to the actual current code digest. State schema and data
 directory remain unchanged. Unknown unit/route replacement is preserved. Keep
 current, predecessor and one candidate release (at most 384 MiB code); verified
 older code is pruned on later selection. Pending dispatches prevent pruning.
-Receiving receipts stop at 128 (at most 2 MiB per receipt). The central
-journal admits 128 operations per Home, owner and service identity and up to
-4,096 operations across the 32 supported grants. Admission and counting share
-one write transaction. Exact retries still read their original records after
+Receiving receipts default to 128 (at most 2 MiB per receipt). For one
+existing target the operator can pair an executor `--receipt-limit` with
+the same value under the gateway's `receipt_limits`, keyed by the normal
+Home/owner/service target key. Both bounds allow up to 256. The override
+is outside the grant and receiver descriptors, so package identity and
+request receipts remain valid. Select the executor first. The gateway
+retains its aggregate 4,096-operation ceiling across 32 grants, with
+admission and counting in one write transaction. Exact retries still read their original records after
 capacity is reached. Retain operation identities and their receipts when
 planning lifecycle retention. Ordinary own Home publication history keeps its existing policy.
 

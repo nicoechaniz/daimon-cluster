@@ -11,18 +11,20 @@ from urllib.parse import quote, urlsplit
 from ..operation_journal import JournalCapacity, OperationJournal
 from ..onboarding_conversation_routes import Routes, LIMIT, configuration as route_configuration
 from .policy import validate_audience
-from .service_package import (MAX_ARCHIVE, RESERVED, canonical, closed, exact, path,
-                              request, sha, unpack)
+from .service_package import (DEFAULT_SERVICE_RECEIPTS, MAX_ARCHIVE, MAX_SERVICE_RECEIPTS,
+                              RESERVED, canonical, closed, exact, path, request, sha, unpack)
 from .service_runtime import receiver, key
 
 
 MAX_GRANTS = 32
-OPERATIONS_PER_SERVICE = 128
+OPERATIONS_PER_SERVICE = DEFAULT_SERVICE_RECEIPTS
+MAX_JOURNAL_OPERATIONS = 4096
 
 
 @closed
 def configuration(value):
-    exact(value, 'schema state grants', 'invalid_service_deploy_configuration')
+    keys = 'schema state grants receipt_limits' if 'receipt_limits' in value else 'schema state grants'
+    exact(value, keys, 'invalid_service_deploy_configuration')
     if value['schema'] != 'dm.home-service-capabilities/v1':
         raise ValueError('invalid_service_deploy_configuration')
     path(value['state'])
@@ -74,6 +76,12 @@ def configuration(value):
         units.add(unit)
         listeners.add(listener)
         route_states.add(g['routes']['state'])
+    limits = value.get('receipt_limits', {})
+    targets = {key(grant['receiver']) for grant in value['grants']}
+    if (not isinstance(limits, dict) or not limits.keys() <= targets
+            or any(type(limit) is not int or not DEFAULT_SERVICE_RECEIPTS <= limit <= MAX_SERVICE_RECEIPTS
+                   for limit in limits.values())):
+        raise ValueError('invalid_service_receipt_limits')
     return value
 
 
@@ -242,8 +250,8 @@ class Deployments:
                         expected_precondition={'digest': value['previous']},
                         intended_transition={'digest': package['sha256']},
                         audit_identity={'home': home, 'owner': owner.ref},
-                        target_limit=OPERATIONS_PER_SERVICE,
-                        journal_limit=MAX_GRANTS * OPERATIONS_PER_SERVICE)
+                        target_limit=self.config.get('receipt_limits', {}).get(target, OPERATIONS_PER_SERVICE),
+                        journal_limit=MAX_JOURNAL_OPERATIONS)
                 except JournalCapacity as exc:
                     raise ValueError('service_operation_capacity') from exc
             with self.journal.mutation_lock(op['operation_id']):

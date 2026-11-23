@@ -20,8 +20,8 @@ import urllib.request
 from .. import being_seed
 from ..onboarding_conversation import atomic
 from ..onboarding_release import regular
-from .service_package import (HEX, NAME, MAX_ARCHIVE, canonical, closed, exact,
-                              path, sha, unpack, verify_tree)
+from .service_package import (DEFAULT_SERVICE_RECEIPTS, HEX, MAX_ARCHIVE, MAX_SERVICE_RECEIPTS,
+                              NAME, canonical, closed, exact, path, sha, unpack, verify_tree)
 
 
 @closed
@@ -83,7 +83,10 @@ def unit(config, release, package):
 
 
 class Runtime:
-    def __init__(self, config):
+    def __init__(self, config, *, receipt_limit=DEFAULT_SERVICE_RECEIPTS):
+        if type(receipt_limit) is not int or not DEFAULT_SERVICE_RECEIPTS <= receipt_limit <= MAX_SERVICE_RECEIPTS:
+            raise ValueError('invalid_service_receipt_limit')
+        self.receipt_limit = receipt_limit
         self.config = receiver(config)
         self.root = path(config['root'])
         self.code = path(config['code'])
@@ -259,7 +262,7 @@ class Runtime:
                 return {'state': 'absent', 'digest': envelope['digest']}
             if (current['digest'] if current else None) != envelope['previous']:
                 raise ValueError('service_predecessor_conflict')
-            if len(list(self.root.glob('operation-*.json'))) >= 128:
+            if len(list(self.root.glob('operation-*.json'))) >= self.receipt_limit:
                 raise ValueError('service_receipt_capacity')
             for pending in self.root.glob('operation-*.json'):
                 if json.loads(regular(pending, uid=os.geteuid(), limit=2*1024**2))['state'] == 'dispatched':
@@ -336,6 +339,7 @@ def re_id(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, type=Path)
+    parser.add_argument('--receipt-limit', type=int, default=DEFAULT_SERVICE_RECEIPTS)
     args = parser.parse_args()
     def expired(*_):
         raise TimeoutError('service_executor_deadline')
@@ -348,7 +352,7 @@ def main():
         if len(raw) > MAX_ARCHIVE * 2 + 65536:
             raise ValueError('service_executor_input_capacity')
         envelope = json.loads(raw)
-        worker = Runtime(config)
+        worker = Runtime(config, receipt_limit=args.receipt_limit)
         print(json.dumps(worker.run(envelope)))
     except (ValueError, OSError, subprocess.SubprocessError, TimeoutError) as error:
         import re

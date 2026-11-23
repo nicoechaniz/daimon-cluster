@@ -328,11 +328,12 @@ class Deployments:
                 return selected if urlsplit(selected).path.startswith(grant['prefix']) else grant['prefix']
         return None
 
-    def access(self, app, home, subject, service_key):
+    def access(self, app, home, subject, service_key, *, service=None):
         """Current capability, exact committed App version and live audience required."""
         for g in self.config['grants']:
             c = g['receiver']
-            if c['home'] != home or 's-' + key(c) != service_key:
+            if (c['home'] != home or 's-' + key(c) != service_key
+                    or (service is not None and c['service'] != service)):
                 continue
             owner = app.authority.actor(c['owner'])
             if not owner or not owner.enabled:

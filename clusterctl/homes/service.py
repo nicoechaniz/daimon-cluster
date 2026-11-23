@@ -432,6 +432,29 @@ class Application:
             allowed = bool(reader and reader.enabled and self.selected(
                 home, payload['resource'], payload['version'], reader, False))
             return {'schema': 'dm.review-access/v1', **payload, 'allowed': allowed}
+        if operation == 'check-holodeck-review-ownership':
+            if (not isinstance(payload, dict) or set(payload) != {'actor_ref', 'service_key', 'resource', 'version'}
+                    or not all(isinstance(payload[key], str) for key in payload)
+                    or not re.fullmatch(r'dm:being:v1:[A-Za-z0-9_-]{43}', payload['actor_ref'])
+                    or not re.fullmatch(r's-[a-f0-9]{24}', payload['service_key'])
+                    or not re.fullmatch(r'[a-f0-9]{32}', payload['resource'])
+                    or not re.fullmatch(r'[a-f0-9]{64}', payload['version'])):
+                raise ValueError('invalid_holodeck_review_ownership_scope')
+            actor = self.authority.actor(payload['actor_ref'])
+            owned = False
+            if (actor and actor.kind == 'being' and actor.enabled and self.service_deployments
+                    and self.service_deployments.access(self, home, actor, payload['service_key'], service='holodeck')):
+                registered = self.registry.resource_owner(payload['resource'])
+                if registered and registered['owner'] == actor.ref:
+                    source_home = registered['home']
+                    for entry in self.publication(source_home)['entries']:
+                        if entry['artifact_ref'] != payload['resource']:
+                            continue
+                        version = payload['version']
+                        owned = entry['version_ref'] == version or any(
+                            item['version_ref'] == version for item in entry.get('versions', ()))
+                        break
+            return {'schema': 'dm.holodeck-review-ownership/v1', **payload, 'owned': owned}
         if operation == "sync":
             if payload:
                 raise ValueError("home_sync_takes_no_manifest_from_client")

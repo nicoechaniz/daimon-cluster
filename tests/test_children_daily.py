@@ -428,6 +428,26 @@ class CurrentPhaseEvidenceTests(unittest.TestCase):
         result['targets'] = {}
         self.assertFalse(daily.observation_complete(result))
 
+    def test_changed_deployment_selection_does_not_mask_other_failures(self):
+        unit = 'conversation.service'
+        manifest = {'sha256': 'pin'}
+        config = {'targets': [{'id': 'pixin', 'instance': 'dm-pixin'}],
+                  'application_inventory': {'deployment_manifests': {'pixin': manifest},
+                                            'units': {'pixin': [unit]}}}
+        observed_unit = {'state': 'observed', 'deployment': {'state': 'selection-changed'}}
+        inventory = {'state': 'observed', 'deployment_manifest_sha256': 'pin',
+                     'deployment_selection_units': [unit], 'units': {unit: observed_unit}}
+        report = {'source': {'state': 'fresh'},
+                  'targets': {'pixin': {'debian_advisories': 'matched', 'applications': inventory}}}
+        report['phases'] = daily.phase_observations(config, report)
+        self.assertEqual(report['phases']['selected_deployments']['state'], 'selection-changed')
+        self.assertEqual(report['phases']['selected_deployments']['selection_changed_targets'], ['pixin'])
+        self.assertTrue(daily.observation_complete(report))
+        observed_unit['state'] = 'unavailable'
+        report['phases'] = daily.phase_observations(config, report)
+        self.assertEqual(report['phases']['selected_deployments']['state'], 'incomplete')
+        self.assertFalse(daily.observation_complete(report))
+
     def test_current_cleanup_and_browser_success_survive_pending_advisory_triage(self):
         names = ['pixin', 'calipso', 'c-137', 'noodles']
         config = {'targets': [{'id': 'host', 'instance': None}] +

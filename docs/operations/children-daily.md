@@ -66,7 +66,15 @@ The finite command now reports `observation_complete` and `needs_triage`
 separately. Successful advisory reads with pending findings return0 for execution
 health, while `coverage=partial`, findings and the daily-security coverage
 incident remain open. A missing source/target, failed selected adapter or empty
-inventory still returns2. Do not reinterpret the scheduled-job observer's
+inventory still returns2. If a stable running application uses a different
+release path from the reviewed manifest, record `selection-changed` in
+`selected_deployments` and list it in the command summary. Continue runtime
+inventory, listener reads, and public advisory matching. Keep provenance
+coverage pending. Hash, custody, file-set and unstable process failures still
+return2. Refresh the manifest from the owning release's verified artifact
+inventory and select it in the daily configuration whenever a release changes
+the executable or working directory. Do not derive expected hashes from the
+running instance. Do not reinterpret the scheduled-job observer's
 recovery as vulnerability remediation or completion of the separate coverage
 incident.
 

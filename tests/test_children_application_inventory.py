@@ -341,7 +341,14 @@ def test_changed_source_selection_never_becomes_verified(selected_deployment,cha
         (proc/'3/exe').unlink()
         (proc/'3/exe').symlink_to(outside)
     result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
-    assert result['units']['own.service']['state']=='unavailable'
+    row = result['units']['own.service']
+    if change in ('cwd', 'executable'):
+        assert row['state'] == 'observed'
+        assert row['deployment'] == {
+            'state': 'selection-changed', 'reason': f'selected_deployment_{change}_changed'}
+    else:
+        assert row['state'] == 'unavailable'
+        assert 'deployment' not in row
 
 
 def test_same_pid_cwd_change_during_final_check_is_not_current_binding(selected_deployment,monkeypatch):

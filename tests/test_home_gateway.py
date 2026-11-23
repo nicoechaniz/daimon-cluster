@@ -181,6 +181,40 @@ def test_current_and_historical_audiences_both_required(tmp_path):
     assert not app.selected("one", "a" * 32, "current", authority.actor("human-one"))
 
 
+def test_review_ownership_uses_the_bound_home_and_current_retention(tmp_path):
+    authority = Authority()
+    previous = selected('a' * 32, 'human', revision='2' * 64)
+    current = selected('a' * 32, 'human', versions=[previous])
+    foreign = selected('b' * 32, 'individual', recipients=['owner-one'])
+
+    class Backend:
+        def __init__(self, entry):
+            self.projection = {'schema': 1, 'entries': [entry]}
+
+        def state(self):
+            return self.projection
+
+    app = Application({'homes': {
+        'one': {'owner_being_ref': 'owner-one', 'owner_revision': 'v1', 'owner_token_file': key(tmp_path, 'first', 'first-owner')},
+        'two': {'owner_being_ref': 'owner-two', 'owner_revision': 'v1', 'owner_token_file': key(tmp_path, 'second', 'second-owner')},
+    }}, authority, Sessions(tmp_path / 'state'), backends={'one': Backend(current), 'two': Backend(foreign)})
+    app.owner('one', 'first-owner', 'sync', {})
+    app.owner('two', 'second-owner', 'sync', {})
+    assert app.selected('two', foreign['artifact_ref'], foreign['version_ref'], authority.actor('owner-one'))
+    query = {'actor_ref': 'owner-one', 'editions': [
+        {'resource': item['artifact_ref'], 'version': item['version_ref']}
+        for item in (current, previous, foreign)
+    ]}
+    def check():
+        return app.owner('one', 'first-owner', 'check-review-ownership', query)['owned']
+
+    assert check() == query['editions'][:2]
+    current['versions'] = []
+    app.owner('one', 'first-owner', 'sync', {})
+    assert app.registry.version(home='one', resource=previous['artifact_ref'], version=previous['version_ref'])
+    assert check() == query['editions'][:1]
+
+
 def test_historical_grant_cannot_be_rewritten_by_local_publisher(tmp_path):
     authority = Authority()
     registry = Registry(Sessions(tmp_path))
@@ -422,6 +456,25 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
                 app.owner('one', other, 'check-review-access', scope)
             with pytest.raises(ValueError):
                 app.owner('one', 'home-owner', 'check-review-access', {**scope, 'actor_ref': 'human-one', 'url': 'https://other.example'})
+            editions = [
+                {'resource': 'd' * 32, 'version': entries[3]['version_ref']},
+                {'resource': 'd' * 32, 'version': '0' * 64},
+                {'resource': 'f' * 32, 'version': entries[3]['version_ref']},
+            ]
+            owner_scope = {'actor_ref': home['owner_being_ref'], 'editions': editions}
+            assert app.owner('one', 'home-owner', 'check-review-ownership', owner_scope) == {
+                'schema': 'dm.review-ownership/v1', 'actor_ref': home['owner_being_ref'],
+                'owned': editions[:1],
+            }
+            for invalid in [
+                {**owner_scope, 'actor_ref': 'human-two'},
+                {**owner_scope, 'editions': editions * 6},
+                {**owner_scope, 'editions': editions[:1] * 2},
+            ]:
+                with pytest.raises(ValueError):
+                    app.owner('one', 'home-owner', 'check-review-ownership', invalid)
+            with pytest.raises(ValueError):
+                app.owner('one', other, 'check-review-ownership', owner_scope)
             assert get(review.replace(entries[3]['version_ref'], 'current'), other)[0] == 404
             assert get(review + '?url=https://other.example', other)[0] == 404
             assert get('/access/review-source/' + 'a' * 32 + '/' + entries[0]['version_ref'])[0] == 404

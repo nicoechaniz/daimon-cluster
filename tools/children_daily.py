@@ -519,7 +519,7 @@ def phase_observations(config, report):
                                else 'no-selected-triage' if value.get('needs_triage') is False
                                and value.get('state') == 'matched' else 'unavailable'}
     manifests = config.get('application_inventory', {}).get('deployment_manifests', {})
-    selected, observed, unselected_units = set(manifests), [], []
+    selected, observed, changed, unselected_units = set(manifests), [], [], []
     for name, units in config.get('application_inventory', {}).get('units', {}).items():
         inventory = report.get('targets', {}).get(name, {}).get('applications', {})
         requested = inventory.get('deployment_selection_units', []) if name in manifests else []
@@ -527,15 +527,25 @@ def phase_observations(config, report):
             requested = []
         if (name in manifests and inventory.get('state') == 'observed' and requested
                 and set(requested) <= set(units)
-                and inventory.get('deployment_manifest_sha256') == manifests[name]['sha256']
-                and all(inventory.get('units', {}).get(unit, {}).get('state') == 'observed'
-                        and inventory['units'][unit].get('deployment', {}).get('state') == 'verified'
-                        for unit in requested)):
-            observed.append(name)
+                and inventory.get('deployment_manifest_sha256') == manifests[name]['sha256']):
+            requested_evidence = [inventory.get('units', {}).get(unit, {}) for unit in requested]
+            if all(unit.get('state') == 'observed' for unit in requested_evidence):
+                states = {unit.get('deployment', {}).get('state') for unit in requested_evidence}
+                if states == {'verified'}:
+                    observed.append(name)
+                elif states <= {'verified', 'selection-changed'}:
+                    changed.append(name)
         unselected_units.extend(name + ':' + unit for unit in units if unit not in requested)
+    missing = selected - set(observed) - set(changed)
+    deployment_state = 'not-selected' if not selected else 'observed'
+    if missing:
+        deployment_state = 'incomplete'
+    elif changed:
+        deployment_state = 'selection-changed'
     phases['selected_deployments'] = {
-        'state': 'not-selected' if not manifests else 'observed' if set(observed) == selected else 'incomplete',
-        'observed_targets': sorted(observed), 'unavailable_targets': sorted(selected - set(observed)),
+        'state': deployment_state,
+        'observed_targets': sorted(observed), 'unavailable_targets': sorted(missing),
+        'selection_changed_targets': sorted(changed),
         'unselected_units': sorted(unselected_units),
         'scope': 'Selected file hashes/process association; imported Python modules and dependencies remain unassessed'}
     phases['selected_public_python_malicious'] = (
@@ -706,6 +716,8 @@ def main():
     result = collect(json.loads(args.config.read_text()))
     print(json.dumps({'coverage': result['coverage'], 'source': result['source']['state'],
                       'observation_complete': observation_complete(result),
+                      'incomplete_phases': {key: value['state'] for key, value in result.get('phases', {}).items()
+                                            if value['state'] in ('incomplete', 'selection-changed')},
                       'needs_triage': any(result.get(key,{}).get('needs_triage') is True
                           for key in ('public_advisories', 'known_exploitation')),
                       'targets': {k: v.get('debian_advisories') for k, v in result['targets'].items()}}))

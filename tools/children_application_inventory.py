@@ -358,6 +358,10 @@ def verify_tree(row, hashed, check):
             raise ValueError('selected_deployment_file_changed')
 
 
+class DeploymentSelectionChanged(ValueError):
+    """The stable process uses a different release than the selected manifest."""
+
+
 def verify_deployment(row, process, image, hashed, check):
     root = Path(row['root'])
     if root.resolve() != root:
@@ -373,9 +377,9 @@ def verify_deployment(row, process, image, hashed, check):
         entrypoint = python_script_entrypoint(process, image, root, row['files'])
     elif row['bind'] == 'cwd':
         if (process/'cwd').resolve() != root:
-            raise ValueError('selected_deployment_cwd_changed')
+            raise DeploymentSelectionChanged('selected_deployment_cwd_changed')
     elif not image.is_relative_to(root) or str(image.relative_to(root)) not in row['files']:
-        raise ValueError('selected_deployment_executable_changed')
+        raise DeploymentSelectionChanged('selected_deployment_executable_changed')
     verify_tree(row, hashed, check)
     if row['bind'] == 'cwd' and (process/'cwd').resolve() != root:
         raise ValueError('selected_deployment_cwd_changed')
@@ -471,9 +475,13 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
                     if len(report['environments'])>=8:raise ValueError('Python_path_capacity')
                     report['environments'][key]={'ecosystem':'unqualified-Python-metadata',
                         'packages':metadata(site,check),'source':'installed-metadata-only; not package-code execution'}
-            if deployments is not None and unit in deployments['units']:
-                value['deployment'] = verify_deployment(deployments['units'][unit], process,
-                    Path(target), hashed, check)
+            deployment = deployments['units'].get(unit) if deployments is not None else None
+            observed_cwd = (process/'cwd').resolve(strict=True) if deployment and deployment['bind'] == 'cwd' else None
+            if deployment:
+                try:
+                    value['deployment'] = verify_deployment(deployment, process, Path(target), hashed, check)
+                except DeploymentSelectionChanged as error:
+                    value['deployment'] = {'state': 'selection-changed', 'reason': str(error)}
             if include_network_listeners:
                 value['network_listeners'] = process_listeners(process, check)
             latest=properties(unit)
@@ -483,21 +491,16 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
                 raise ValueError('process_changed_during_observation')
             if image_identity(image.stat())!=identity or str(image.readlink())!=target:
                 raise ValueError('executable_changed_during_observation')
-            if (deployments is not None and unit in deployments['units']
-                    and deployments['units'][unit]['bind'] == 'cwd'
-                    and (process/'cwd').resolve() != Path(deployments['units'][unit]['root'])):
+            if observed_cwd is not None and (process/'cwd').resolve(strict=True) != observed_cwd:
                 raise ValueError('selected_deployment_cwd_changed')
-            if (deployments is not None and unit in deployments['units']
-                    and deployments['units'][unit]['bind'] == 'python-script'
-                    and python_script_entrypoint(process, Path(target),
-                        Path(deployments['units'][unit]['root']), deployments['units'][unit]['files'])
+            if value.get('deployment', {}).get('state') == 'verified':
+                if (deployment['bind'] == 'python-script'
+                        and python_script_entrypoint(process, Path(target), Path(deployment['root']), deployment['files'])
                         != value['deployment']['python_entrypoint']):
-                raise ValueError('selected_deployment_python_script_changed')
-            if (deployments is not None and unit in deployments['units']
-                    and 'components' in deployments['units'][unit]
-                    and [str(p) for p in declared_python_paths(process)]
-                    != deployments['units'][unit]['pythonpath']):
-                raise ValueError('selected_deployment_pythonpath_changed')
+                    raise ValueError('selected_deployment_python_script_changed')
+                if ('components' in deployment
+                        and [str(p) for p in declared_python_paths(process)] != deployment['pythonpath']):
+                    raise ValueError('selected_deployment_pythonpath_changed')
             value['state']='observed'
         except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
             value.update(state='unavailable',reason=str(error) if type(error) is ValueError else type(error).__name__)

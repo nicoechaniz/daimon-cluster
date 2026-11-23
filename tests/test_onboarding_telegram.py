@@ -461,3 +461,21 @@ def test_native_supervisor_selection_uses_existing_verified_code(tmp_path):
     assert native_supervisor_code(base, selected) == base
     helper.unlink()
     assert native_supervisor_code(base, selected) == base
+
+
+def test_runtime_repair_preserves_verified_running_supervisor(tmp_path, monkeypatch):
+    from clusterctl import onboarding_telegram as module, onboarding_code_successor
+    base, selected = tmp_path/'base', tmp_path/'selected'
+    previous = Path('/opt/daimon-onboarding-runtime') / ('a'*64)
+    unit = tmp_path/'native.service'
+    unit.write_bytes(native_service(Path('/home/agent'),Path('/usr/local/bin/codex'),previous))
+    calls = []
+    monkeypatch.setattr(onboarding_code_successor, 'verify', lambda *a, **kw: calls.append(a))
+    original = module.onboarding_release.regular
+    monkeypatch.setattr(module.onboarding_release, 'regular', lambda p, **kw:
+        b'identical supervisor' if p.name=='native_codex_supervisor.py' else original(p, uid=os.geteuid()))
+    assert module.native_supervisor_code(base, selected, unit=unit) == previous
+    assert calls == [(previous, 'a'*64, base, base.name)]
+    unit.write_bytes(unit.read_bytes().replace(b'KillMode=control-group', b'KillMode=process'))
+    with pytest.raises(OnboardingError):
+        module.native_supervisor_code(base, selected, unit=unit)

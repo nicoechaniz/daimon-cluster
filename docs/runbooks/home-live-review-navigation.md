@@ -363,3 +363,33 @@ by actual catalog/alias/stylesheet readback and a browser at desktop and phone
 widths. Preserve the current immutable gateway release, SDK, configuration,
 Homemaker selection and state during a source-only overlay/rollback. A passing
 fixture or an own-being browser does not establish a human phone's acceptance.
+
+### Local Guitar entry
+
+`assets/guitar-entry.html` retains the existing public navigation-only page.
+Its `/guitar/` alias remains stable; the controller still runs only on Legion
+at localhost18879 with the Beacon attached. Do not contact that listener or
+move hardware to qualify this page.
+
+For the existing inline Caddy entry, render the selected template through
+`build_label.stamp(template.read_bytes().rstrip(b"\n"), build_label.digest([template]))`.
+Caddy quoted response strings do not decode JSON newline escapes: keep this
+inline body on one line instead of publishing a literal trailing `\n`.
+Only replace that exact inline response, preserving its matcher, status,
+no-store policy and every other route. Validate with the actually selected
+Caddy executable/environment, guard the current configuration digest, reload
+Caddy and compare the actual HTTPS body/hash and version stylesheet. Preserve
+the preceding exact configuration for a guarded source-only rollback. This
+updates navigation UI, not the local controller or hardware acceptance.
+
+Do not use anonymous sign-in pages as proof of a private application's build.
+Record authenticated UI/source evidence and the audience denial separately.
+Qualification-only own-service publications are not human-facing Apps coverage.
+
+HTML applications published as artifacts (including standalone Oca/School and
+evolving study pages) also show `v` in that same small line. This is the exact
+selected publication revision, labeled independently of the common viewer's
+`ui` build. It changes when the selected page changes and remains pinned for
+an explicitly historical review. It is not a backend/program-code digest.
+The outer trusted shell supplies both labels; immutable child bytes, audiences,
+resource history and draft/promotion rules remain unchanged.

@@ -897,7 +897,7 @@ def test_explicit_membership_only_intent_skips_publication_pipeline(fixture, mon
     monkeypatch.setattr(GroupCoordinator, '_prepare_communication', lambda *a, **k: pytest.fail('communication preparation'))
     result = GroupCoordinator(f.backend).advance('newcomer', timeout_seconds=300)
     assert result == {'signed_membership': 'only', 'receiving_readiness': 'unobserved'}
-    assert seen == [('newcomer', 60)] and f.calls == []
+    assert seen == [('newcomer', 180)] and f.calls == []
     assert f.body['registered'] is False
 
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import re
 from pathlib import Path
 import pwd
 import subprocess
@@ -26,10 +28,14 @@ GATEWAY = r'''
 import json,sys,urllib.error,urllib.request
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
+value=json.load(sys.stdin)
+if value.get('runtime_imports') is not None:
+ from clusterctl.onboarding_companion_homes import gateway_imports
+ sys.path.insert(1,str(gateway_imports(value['runtime_imports'])))
 from clusterctl.homes.host import register_companion
 from clusterctl.homes.provision import regular
 from clusterctl.homes.service import validate_config,private_text
-value=json.load(sys.stdin);path=Path(value['config'])
+path=Path(value['config'])
 if value['action']=='register':
  raw=regular(path)
  result=register_companion(path,value['request'],value['public'],
@@ -54,12 +60,58 @@ else:
     observed=json.loads(raw)
    if observed['human']['ref']!=request['human_ref'] or observed['owner_being_ref']!=request['being_ref']:
     raise ValueError('companion_home_binding_conflict')
-   result={'state':'ready','pair_matched':True}
+   result=({'schema':observed['schema'],'home_ref':observed['home_ref'],
+    'owner_being_ref':observed['owner_being_ref'],'human':{'ref':observed['human']['ref']}}
+    if value['action']=='pairing' else {'state':'ready','pair_matched':True})
   except urllib.error.HTTPError as error:
    result={'state':'not-loaded' if error.code==404 else 'unavailable'}
   except (OSError,ValueError,KeyError):result={'state':'unavailable'}
 print(json.dumps(result))
 '''
+
+
+def import_selection(value):
+    if (not isinstance(value, dict) or set(value) != {'path', 'sdk_digest', 'files_sha256'}
+            or not isinstance(value['path'], str) or not Path(value['path']).is_absolute()
+            or Path(value['path']).name != 'runtime-imports' or '..' in Path(value['path']).parts
+            or any(not isinstance(value[k], str) or not re.fullmatch('[0-9a-f]{64}', value[k])
+                   for k in ('sdk_digest', 'files_sha256'))):
+        raise OnboardingError('companion_gateway_imports_required')
+    return value
+
+
+def gateway_imports(value):
+    """Reuse the gateway's explicitly selected, protected native SDK imports.
+
+    The ordinary gateway Python can have a legacy installed SDK while its
+    actual service imports a newer qualified tree. Never silently fall back.
+    """
+    from .onboarding_release import regular
+    value = import_selection(value)
+    root = Path(value['path'])
+    expected = dict(schema='cluster-onboarding-runtime-imports/v1',
+        sdk_digest=value['sdk_digest'], files_sha256=value['files_sha256'])
+    if document(root.parent/'runtime-imports.json') != expected:
+        raise OnboardingError('companion_gateway_imports_changed')
+    pending, files, total, entries = [root], {}, 0, 0
+    while pending:
+        parent = pending.pop()
+        private_directory(parent)
+        for path in parent.iterdir():
+            entries += 1
+            if entries > 20000 or path.is_symlink():
+                raise OnboardingError('companion_gateway_imports_changed')
+            if path.is_dir():
+                pending.append(path)
+            else:
+                raw = regular(path, uid=os.geteuid())
+                total += len(raw)
+                if total > 256*1024**2:
+                    raise OnboardingError('companion_gateway_imports_changed')
+                files[path.relative_to(root).as_posix()] = hashlib.sha256(raw).hexdigest()
+    if not files or digest(files) != value['files_sha256']:
+        raise OnboardingError('companion_gateway_imports_changed')
+    return root
 
 
 class CompanionHomes:
@@ -108,6 +160,8 @@ class CompanionHomes:
                 raise OnboardingError('companion_gateway_owner_required')
             argv = ['/usr/sbin/runuser', '-u', pwd.getpwuid(uid).pw_name, '--', *argv]
         payload = dict(action=action, config=str(path), request=request)
+        if 'runtime_imports' in gateway:
+            payload['runtime_imports'] = gateway['runtime_imports']
         if action == 'register':
             payload.update(public=public, human_name=pair['human_name'], vpn_url=pair['vpn_url'])
         raw = json.dumps(payload).encode()
@@ -139,6 +193,12 @@ class CompanionHomes:
         target = os.fsencode(self.value['gateway']['config'])
         if len(raw)>65536 or not any(a==b'--config' and b==target for a,b in zip(args,args[1:])):
             raise OnboardingError('companion_gateway_service_binding_changed')
+        boot = next(line.split()[1] for line in Path('/proc/stat').read_text().splitlines()
+                    if line.startswith('btime '))
+        process = (Path('/proc')/pid/'stat').read_text().rsplit(')',1)[1].split()
+        value['process_start_epoch_ns'] = (int(boot)*1_000_000_000
+            + int(process[19])*1_000_000_000//os.sysconf('SC_CLK_TCK'))
+        value['config_mtime_ns'] = Path(self.value['gateway']['config']).stat().st_mtime_ns
         return value
 
     def _reload(self):
@@ -152,7 +212,10 @@ class CompanionHomes:
     def _pins(self, plan_digest, request, pair):
         value = dict(plan_digest=plan_digest, request=request, gateway=self.value['gateway'], pair=pair)
         if self.value['schema'] == ROUTED_SCHEMA:
-            value['routes'] = self.value['routes']
+            # Maintenance transport describes current upstreams, not the
+            # companion's immutable Home/route selection. It may be refreshed
+            # without reenrolling a completed registration.
+            value['routes'] = {k:v for k,v in self.value['routes'].items() if k != 'maintenance'}
         return digest(value)
 
     def _routes(self, backend, plan, request):
@@ -235,11 +298,21 @@ class CompanionHomes:
                 observed.update(phase='complete',own_pair_observed=True)
                 self._save(path,observed)
                 return {'state':'complete'}
-            if probe.get('state')=='not-loaded' and observed['phase']=='configured':
+            # Unknown newly registered owners receive 403, not 404. Reload
+            # once only when this exact registered config demonstrably postdates
+            # the running process; an ordinary live auth failure is not absence.
+            pending_unit = self._unit() if (probe.get('state') == 'unavailable'
+                and observed['phase'] == 'configured') else None
+            pending_config = (pending_unit is not None
+                and pending_unit.get('process_start_epoch_ns', 2**63)
+                    < pending_unit.get('config_mtime_ns', 0)
+                and hashlib.sha256(Path(self.value['gateway']['config']).read_bytes()).hexdigest()
+                    == observed['registration'].get('config_digest'))
+            if (probe.get('state')=='not-loaded' or pending_config) and observed['phase']=='configured':
                 self._selected()
                 if not backend.authorize(plan,pair['plan_digest']):
                     raise OnboardingError('host_authorization_required')
-                unit = self._unit()
+                unit = pending_unit if pending_unit is not None else self._unit()
                 if unit.get('ActiveState')!='active' or unit.get('MainPID') in {None,'0'}:
                     raise OnboardingError('companion_gateway_service_unobserved')
                 observed.update(phase='reload-intent',reload_predecessor=unit)
@@ -247,6 +320,14 @@ class CompanionHomes:
                 self._reload()
                 # Read back next cadence, including after a lost reload reply.
             return {'state':'waiting','reason':'companion_gateway_receiving_unconfirmed'}
+
+    def conversation_pairing(self, plan, request):
+        self._selected()
+        pair = self.value['pairs'].get(plan['name'])
+        if (pair is None or pair['owner'] != plan['owner']
+                or pair['plan_digest'] != digest(plan)):
+            raise OnboardingError('companion_gateway_operation_refused')
+        return self._gateway('pairing', request)
 
     def conversation_access(self, plan, request, apply):
         self._selected()
@@ -277,7 +358,7 @@ class CompanionHomes:
                 raise OnboardingError('conversation_access_receipt_changed')
             if saved.get('verified') is True:
                 retire(saved['checks'])
-                return Observation('complete',{'conversation_verified':True,'shared_login_verified':True})
+                return Observation('complete',{'verified':True,'conversation_verified':True,'shared_login_verified':True})
         if not apply:
             return Observation('absent',safe_to_execute=True)
         gateway_path = Path(self.value['gateway']['config'])
@@ -294,7 +375,7 @@ class CompanionHomes:
             raise OnboardingError('conversation_access_unconfirmed')
         self._save(receipt,dict(pins=expected,verified=True,checks=result))
         retire(result)
-        return Observation('complete',{'conversation_verified':True,'shared_login_verified':True})
+        return Observation('complete',{'verified':True,'conversation_verified':True,'shared_login_verified':True})
 
 
 def configure(value, *, progress, store, backend, worker_uid, selection_path=None):
@@ -303,11 +384,13 @@ def configure(value, *, progress, store, backend, worker_uid, selection_path=Non
             or value.get('schema') not in {SCHEMA, ROUTED_SCHEMA}
             or not isinstance(value['state'],str) or not Path(value['state']).is_absolute()
             or '..' in Path(value['state']).parts
-            or not isinstance(value['gateway'],dict) or set(value['gateway'])!={'config','python'}
+            or not isinstance(value['gateway'],dict) or set(value['gateway'])-{'runtime_imports'}!={'config','python'}
             or any(not isinstance(p,str) or not Path(p).is_absolute() or '..' in Path(p).parts
-                for p in value['gateway'].values())
+                for p in (value['gateway'].get('config'),value['gateway'].get('python')))
             or not isinstance(value['pairs'],dict) or not 1<=len(value['pairs'])<=16):
         raise OnboardingError('companion_home_configuration_required')
+    if 'runtime_imports' in value['gateway']:
+        import_selection(value['gateway']['runtime_imports'])
     if routed:
         from .onboarding_conversation_routes import configuration as route_configuration
         route_configuration(value['routes'])

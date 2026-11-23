@@ -175,11 +175,44 @@ def test_existing_voice_backend_requires_covered_actual_maintenance_before_publi
     assert routes.interaction_upstreams(live)=={'127.0.0.1:8800'}
 
 
+def test_prepared_route_keeps_original_intent_when_maintenance_transport_is_added(tmp_path):
+    from contextlib import contextmanager
+    writer,args,_,calls,before=assembled(tmp_path)
+    @contextmanager
+    def unavailable(process):
+        raise OnboardingError('conversation_route_maintenance_required')
+        yield
+    writer._maintenance=unavailable
+    with pytest.raises(OnboardingError,match='maintenance_required'):
+        writer.reconcile(*args,apply=True,authorize=lambda:True)
+    original=being_seed._read(writer.state/'active.json')
+    assert original['phase']=='prepared' and writer.path.read_bytes()==before
+    writer.value['maintenance']=[{'refreshed':'operator transport'}]
+    @contextmanager
+    def held(process):
+        yield lambda:None
+    writer._maintenance=held
+    assert writer.reconcile(*args,apply=True,authorize=lambda:True)['state']=='complete'
+    assert being_seed._read(writer.state/'active.json')['pins']==original['pins']
+    assert calls.count('reload')==1
+
+
+def retain_legacy_route_pins(writer, args):
+    request, listener, home_backend = args
+    path = writer.state/'active.json'
+    active = being_seed._read(path)
+    active['pins'] = routes.digest(dict(request=request, listener=listener,
+        home_backend=home_backend, routing=writer.value))
+    being_seed._write(path, active)
+    return active
+
+
 def rotated_prepared(tmp_path):
     writer, args, state, calls, before = assembled(tmp_path)
+    writer.value['maintenance'] = []
     with pytest.raises(OnboardingError, match='host_authorization_required'):
         writer.reconcile(*args, apply=True, authorize=lambda: False)
-    original = being_seed._read(writer.state/'active.json')
+    original = retain_legacy_route_pins(writer, args)
     assert original['phase'] == 'prepared' and writer.path.read_bytes() == before
     # A real operator metadata field; this fixture does not execute transports.
     writer.value['maintenance'] = [dict(name='existing', upstream='127.0.0.1:8800',
@@ -219,10 +252,10 @@ def test_prepared_rotation_rejects_changed_or_unauthorized_work(tmp_path, change
 
 def test_rotation_never_rebinds_an_uncertain_reload(tmp_path):
     writer, args, state, calls, _ = assembled(tmp_path)
+    writer.value['maintenance'] = []
     state['effect'] = False
     assert writer.reconcile(*args, apply=True, authorize=lambda: True)['state'] == 'waiting'
-    original = being_seed._read(writer.state/'active.json')
-    writer.value['maintenance'] = []  # Only the changed-pin behavior is exercised.
+    original = retain_legacy_route_pins(writer, args)
     with pytest.raises(OnboardingError, match='conversation_route_operation_pending'):
         writer.reconcile(*args, apply=True, authorize=lambda: True)
     assert being_seed._read(writer.state/'active.json') == original
@@ -240,6 +273,7 @@ def test_prepared_metadata_history_has_existing_receipt_bound(tmp_path):
 
 def test_published_file_with_prepared_checkpoint_cannot_rotate_metadata(tmp_path, monkeypatch):
     writer, args, _, calls, _ = assembled(tmp_path)
+    writer.value['maintenance'] = []
     original_atomic = routes.atomic
     def fail_after_publish(path, raw, **options):
         original_atomic(path, raw, **options)
@@ -248,9 +282,8 @@ def test_published_file_with_prepared_checkpoint_cannot_rotate_metadata(tmp_path
     monkeypatch.setattr(routes, 'atomic', fail_after_publish)
     with pytest.raises(TimeoutError):
         writer.reconcile(*args, apply=True, authorize=lambda: True)
-    original = being_seed._read(writer.state/'active.json')
+    original = retain_legacy_route_pins(writer, args)
     assert original['phase'] == 'prepared'
-    writer.value['maintenance'] = []
     with pytest.raises(OnboardingError, match='conversation_route_operation_pending'):
         writer.reconcile(*args, apply=True, authorize=lambda: True)
     assert being_seed._read(writer.state/'active.json') == original

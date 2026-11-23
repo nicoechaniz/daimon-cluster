@@ -47,12 +47,83 @@ available; preserve active work, original actor storage and the next-companion h
 
 ## Single-command companion contract
 
+Cold Conversation guests can select `conversation_bundle_by_name` in the host
+configuration: each name maps to a root-owned public App tree and the SHA256 of
+its `conversation-bundle.json` manifest. The existing context stage mounts that
+verified tree read-only at `/opt/daimon-app`; it also exposes its pinned
+`bin/codex` through the standard guest executable path, preserving any differing
+existing executable. This is public software delivery, never a copy of a being's
+home, account, conversation database or memory. The selected Conversation request
+still pins its native/Python executables and every imported component separately.
+The bundle is bounded to 10,000 files/768 MiB, refuses links, writable public code,
+unlisted files and digest changes before allocation, and stays retained while a
+live or rollback configuration references it. Remove only unselected task-owned
+transfer copies after exact readback; never retire a mounted generation.
+
+Operator intake policy may explicitly select `plan_schema` as
+`cluster-onboarding-plan/v2` for web companions. An omitted selection preserves
+the legacy v1 flow. Intake, owner review, custody and the frozen grant must all
+retain that same schema on continuation; do not rewrite a v2 plan into a legacy
+Telegram job. Home and actual cold-VM acceptance remain separately verified.
+Home and cold volumes may use the same quota-capable pool; their distinct
+per-service volume names and original plan pins remain required. A configured
+size on a directory pool is not evidence of quota enforcement.
+
+VM code-device labels use short digest prefixes because Incus embeds them in
+virtiofs UNIX socket paths. Full artifact digests and exact source/path/read-only
+checks remain authoritative. Container labels retain their existing bytes;
+never recreate an existing body to repair a refused VM disk hotplug.
+The context writer waits up to 30 seconds for guest mount readback before using
+hotplugged files. The selected public bundle also prepares missing Debian 13
+`python3-venv`, `rsync` and `nodejs` prerequisites through two bounded package
+commands (90 seconds each, downloaded-package retention disabled). Existing
+ready guests skip installation; an incompatible guest fails without package
+mutation. No model, account, SSH listener or other service is started by this
+dependency preparation.
+
+If the actual shared Home gateway uses scoped native SDK imports, select those
+same imports for its onboarding helper with `gateway.runtime_imports`:
+`path`, `sdk_digest` and `files_sha256` from the protected installed
+`runtime-imports.json`. The helper verifies the complete bounded import tree
+against that exact receipt before importing Home authority constructors. This
+keeps current standing-event bindings readable even when the gateway Python's
+installed legacy SDK differs. Do not upgrade Matrix, copy a peer environment or
+silently fall back to the legacy site package to fix this consumer. Existing
+gateway configurations without an explicit selection remain compatible.
+
+The actual cold KVM exposed SQLite WAL I/O failures on its Incus `virtiofs`
+Home. A disposable probe also failed with metadata caching; native guest-root
+storage passed WAL commit/reopen/integrity readback. Do not select unsafe caching
+or pretend that configured volume capacity proves database readiness.
+
+For these new VM jobs the same context writer places `.agents`, `.local` and
+`.codex` private runtime state on the VM's native root filesystem through bind
+mounts at their original Home paths. This consumes the existing root-disk quota;
+it adds no disk or account and leaves project files/cold storage on their
+selected volumes. Keep service databases in their owned `.local/state` paths.
+Initial copying is limited to inactive, pre-identity context, 20,000 files and
+1 GiB per directory. Original Home files remain preserved beneath the binds;
+one private receipt prevents copying them over newer receiving writes on retry
+or reboot. This is one active canonical memory/history location, not ingestion
+into another pool. Ordinary VM protection must retain its root disk as well as
+the selected Home/cold volumes.
+
+The bounded `daimon-companion-state.service` boot prerequisite waits for the
+original Home mount and gates native/Conversation/Home units. It is a oneshot
+without a timer, model input or account/goal control. Runtime consumers require
+its successful completion. Its installed script/configuration are immutable to
+the receiving agent; a differing prior selection or identity refuses a fresh
+copy. Preserve the original files until actual receiving verification; retire
+only a verified unreferenced preactivation copy through the owning maintenance
+writer. Never unmount a live canonical state path as cleanup.
+
 Nicolas's 8 November correction selects one finite operator command after the
 necessary inputs have been supplied. This is a required completion contract,
-not a claim that the current portal/worker already fulfills it. The next
-companion remains on hold until the full four-child delivery is ready and we
-begin the retained joint timing exercise with Nicolas. Do not provision it to prepare
-the benchmark.
+not a claim that a prepared candidate or partial job already fulfills it.
+Nicolas has explicitly started Emma's actual admission on 17 November; that
+instruction supersedes her earlier hold. Preserve that original job and separate
+command readiness, actual creation and first human/device use. Another future
+companion still requires its own selected inputs and actual authorization.
 
 Collect the real pairing, placement/resource limits, authorized account and
 selected service inputs before invocation. Validate completeness against the
@@ -93,6 +164,14 @@ operation IDs and uncertain effects. The worker's finite owner surface is
 `--extend-seconds 600`: an active supervisor reads the extended deadline without
 launching another worker; an expired operator continues the original job from
 its next missing checkpoint. A plain retry cannot silently reset the deadline.
+For a new v2 foreground job, pass `--home-placements` with the existing
+companion Home composition. The command validates its actual schema and exact
+owner/plan pairing before submitting a job or allocating a body. A missing or
+different placement returns `companion_home_configuration_required` in the
+command-preparation diagnostic. Repair that selected configuration and continue
+the same operation; do not provision manually or replace the intended identity.
+Completed jobs retain the read-only entry path without Home reinstallation.
+
 The bounded record keeps its original start/deadline and aggregate extensions,
 not an unbounded attempt history. Extending wall time changes no native goal,
 token budget, pause or external effect receipt. If an operation was uncertain,
@@ -1901,3 +1980,31 @@ complete literal pins/provenance are verified before sealing and at successor
 validation; arbitrary tool edits and unrelated frozen context still refuse.
 Installed-module verification exercises that repaired closure. The predecessor
 is preserved, and package preparation selects no service or identity.
+
+
+### Cold KVM receiving result and bounded membership continuation
+
+The finite v2 companion command has completed actual cold KVM admission for
+Emma: original identity and operation retained, private native stores, full Codex
+package and supervisor, paired shared Home access, HTTPS Conversation, and signed
+Tribe membership distributed to eight owners. A cold boot and paired technical
+read/anonymous denial/logout were verified. These observations establish technical
+readiness, not a model answer, mailbox provisioning, first human/device use, or
+ordinary group outbound/publication acceptance.
+
+Runtime mount device names account for QEMU's complete 31-byte `incus_` tag.
+KVM owner-control deadlines are rebased to the receiving clock without extending
+the wall expiry. Current signed observation profiles may include exactly the
+existing `we.event.get` read capability and their declared not-before skew;
+arbitrary role/method changes still refuse.
+
+A large membership distribution can span several individually guarded native
+windows in the same finite foreground invocation. Continue only when new native
+step results were durably confirmed and every scoped guard restored. Unchanged
+failures and uncertain restoration stop with retained evidence; the original
+foreground deadline still ends the command. If an invitation expires before
+any dispatch, the supported membership-only continuation requires a fresh exact
+founder-writer absence proof, binds its predecessor and unchanged original intent,
+and retains every earlier frame. At most eight linked attempts and a selected
+expiry of at most 24 hours are allowed. This grants no application publication,
+model execution, account change or automatic authorization renewal.

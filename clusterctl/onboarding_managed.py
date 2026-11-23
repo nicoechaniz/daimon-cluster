@@ -44,7 +44,7 @@ class ManagedRuntime:
         fields = {'schema', 'host_port', 'guest_port', 'authority_key_id', 'authority_public_key',
                   'registrar_key_id', 'registrar_key', 'registry', 'state', 'visibility_installation'}
         admission_only = value.get('schema') == 'cluster-onboarding-managed-runtime/v2'
-        if (set(value) - {'messaging_application'} != fields | ({'mode'} if admission_only else set())
+        if (set(value) - {'messaging_application', 'vm_relay'} != fields | ({'mode'} if admission_only else set())
                 or value.get('schema') not in {'cluster-onboarding-managed-runtime/v1', 'cluster-onboarding-managed-runtime/v2'}
                 or any(type(value[key]) is not int or not 1 <= value[key] <= 65535
                        for key in ('host_port', 'guest_port'))
@@ -60,6 +60,12 @@ class ManagedRuntime:
                 or getattr(config, 'group_admission', None) is not None
                 or getattr(config, 'peer', None) is not None):
             raise OnboardingError('invalid_onboarding_managed_configuration')
+        if 'vm_relay' in value:
+            from .onboarding_vm_admission import request
+            if (not admission_only or config.instance_type != 'virtual-machine'
+                    or not isinstance(value['vm_relay'], str)):
+                raise OnboardingError('invalid_onboarding_managed_configuration')
+            request(value['vm_relay'], value['guest_port'], '0'*64, apply=False)
         ed25519_fingerprint(value['authority_public_key'])
         for key in ('registrar_key', 'registry', 'state'):
             if not isinstance(value[key], str) or not Path(value[key]).is_absolute():
@@ -242,6 +248,10 @@ class ManagedRuntime:
                     connect='tcp:127.0.0.1:' + str(self.settings['host_port']))
 
     def _check_proxy(self, plan: dict, *, deadline_ns: int | None = None) -> bool:
+        if 'vm_relay' in self.settings:
+            from .onboarding_vm_admission import reconcile
+            return reconcile(self.backend, plan, self.settings['vm_relay'],
+                self.settings['guest_port'], apply=False, deadline_ns=deadline_ns)
         if deadline_ns is None:
             rows, _ = self.backend._inventory()
         else:
@@ -375,9 +385,15 @@ class ManagedRuntime:
         remaining()
         if not self._check_proxy(plan, **bounds):
             remaining()
-            proxy = self._proxy()
-            self.backend._dispatch(plan, ['config', 'device', 'add', self.backend.instance(plan),
-                'onboarding-admission', 'proxy', *[key + '=' + value for key, value in proxy.items() if key != 'type']], **bounds)
+            if 'vm_relay' in self.settings:
+                from .onboarding_vm_admission import reconcile
+                if not reconcile(self.backend, plan, self.settings['vm_relay'],
+                        self.settings['guest_port'], apply=True, deadline_ns=deadline_ns):
+                    raise OnboardingError('vm_admission_relay_unconfirmed')
+            else:
+                proxy = self._proxy()
+                self.backend._dispatch(plan, ['config', 'device', 'add', self.backend.instance(plan),
+                    'onboarding-admission', 'proxy', *[key + '=' + value for key, value in proxy.items() if key != 'type']], **bounds)
         configuration = self._profile(plan)
         root = self.state / digest(plan)
         if configuration is None:

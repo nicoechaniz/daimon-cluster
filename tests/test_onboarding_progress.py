@@ -102,3 +102,39 @@ def test_service_loop_does_not_starve_a_third_job_or_repeat_a_running_job(tmp_pa
         thread.join(timeout=4)
     assert not thread.is_alive()
     assert sum(name == "eko" and stage == "environment" for name, stage, _ in backend.calls) == 1
+
+
+def test_foreground_continues_only_confirmed_group_progress_with_original_deadline(tmp_path, monkeypatch):
+    from clusterctl import onboarding_worker as module
+    worker = Worker(JobStore(tmp_path / 'jobs'), FixtureBackend)
+    clock = [10.0]
+    calls = []
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    def tick(name):
+        calls.append(name)
+        clock[0] += 1
+        return {'state': 'waiting', 'reason': 'onboarding_group_bounded_progress_pending'}
+    monkeypatch.setattr(worker, '_tick', tick)
+    status, result = worker.until('eko', deadline=12.0)
+    assert status == 2 and result['reason'] == 'foreground_deadline_expired'
+    assert calls == ['eko', 'eko']
+    calls.clear()
+    def held(name):
+        calls.append(name)
+        return {'state': 'waiting', 'reason': 'operator_attention_required'}
+    monkeypatch.setattr(worker, '_tick', held)
+    status, result = worker.until('eko', deadline=20.0)
+    assert status == 2 and result['reason'] == 'operator_attention_required'
+    assert calls == ['eko']
+
+
+def test_foreground_finishes_after_confirmed_progress_without_enqueuing(tmp_path, monkeypatch):
+    from clusterctl import onboarding_worker as module
+    worker = Worker(JobStore(tmp_path / 'jobs'), FixtureBackend)
+    pending = {'state': 'waiting', 'reason': 'onboarding_group_bounded_progress_pending'}
+    complete = {'state': 'complete'}
+    outcomes = iter([pending, complete])
+    monkeypatch.setattr(worker, '_tick', lambda name: next(outcomes))
+    monkeypatch.setattr(module, 'completed_result', lambda *args: (0, complete))
+    monkeypatch.setattr(worker, '_enqueue', lambda: pytest.fail('unrelated enqueue'))
+    assert worker.until('eko', deadline=time.monotonic()+2) == (0, complete)

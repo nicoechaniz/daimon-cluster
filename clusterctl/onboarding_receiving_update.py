@@ -777,6 +777,30 @@ class SourceGroupClient:
         self._relationship_process: OwnerConversation | None = None
         self.maintenance: tuple[Path, str] | None = None
 
+    def _helper_context(self, code: Path) -> tuple[Path, Path]:
+        """Select the helper's installed SDK sibling; never inspect it as root.
+
+        Only protected public code supplies the digest. The dropped owner CLI
+        still verifies every installed byte and its actual interpreter context.
+        This does not change the serving Source selection or its descriptor.
+        """
+        marker = code/'runtime-successor.json'
+        if code == self.code or not marker.exists():
+            return self.venv, self.imports
+        value = json.loads(onboarding_release.regular(marker, uid=self.code_uid))
+        if value.get('schema') != 'cluster-onboarding-runtime-successor/v4':
+            return self.venv, self.imports
+        pin = value.get('sdk_digest')
+        if not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None:
+            raise OnboardingError('qualified_onboarding_sdk_selection_required')
+        if self.venv.parent.name == pin:
+            return self.venv, self.imports
+        if (re.fullmatch('[0-9a-f]{64}', self.venv.parent.name) is None
+                or self.imports != self.venv.parent/'runtime-imports'):
+            raise OnboardingError('qualified_runtime_imports_required')
+        root = self.venv.parent.parent/pin
+        return root/'venv', root/'runtime-imports'
+
     def _call(self, arguments: list[str], *, command: dict | None = None,
               module: str = 'clusterctl.onboarding_source', native_response: bool = False,
               maintenance: bool = False, inherited_descriptors: tuple[int, ...] = ()) -> dict:
@@ -798,7 +822,8 @@ class SourceGroupClient:
                 or any(type(fd) is not int or fd < 3 for fd in inherited_descriptors)):
             raise OnboardingError('onboarding_group_remaining_owner_input_required')
         code, code_digest = (self.maintenance or (self.code, self.code_digest)) if maintenance else (self.code, self.code_digest)
-        argv = onboarding_sdk.runtime_command(self.venv, self.imports, code, module, [
+        venv, imports = self._helper_context(code)
+        argv = onboarding_sdk.runtime_command(venv, imports, code, module, [
             '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
             '--code-owner', str(self.code_uid), '--code-digest', code_digest,
             '--observation-deadline-ns', str(deadline), *arguments])
@@ -927,7 +952,8 @@ class SourceGroupClient:
             if identity() != before:
                 raise OnboardingError('receiving_source_configuration_changed')
         code, code_digest = self.maintenance or (self.code, self.code_digest)
-        argv = onboarding_sdk.runtime_command(self.venv, self.imports, code, 'clusterctl.onboarding_source', [
+        venv, imports = self._helper_context(code)
+        argv = onboarding_sdk.runtime_command(venv, imports, code, 'clusterctl.onboarding_source', [
             '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
             '--code-owner', str(self.code_uid), '--code-digest', code_digest,
             '--observation-deadline-ns', str(deadline), '--group-request', '-', '--group-session',

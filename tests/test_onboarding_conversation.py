@@ -465,3 +465,24 @@ def test_private_vm_listener_binds_units_and_preserves_resolved_intent():
         with unittest.TestCase().assertRaises(conversation.ConversationError):
             conversation.selection({**value,'listen_host':host})
     assert conversation.listen_host(request())=='127.0.0.1'
+
+
+def test_central_pairing_requires_actual_exact_home_being_and_human():
+    value = request()
+    paired = dict(schema='dm.human-endpoint/v1', home_ref=value['home_ref'],
+        owner_being_ref=value['being_ref'], human={'ref':value['human_ref']})
+    conversation.verify_pairing(value, paired)
+    for changed in (None, {}, {**paired, 'home_ref':'foreign'},
+            {**paired, 'owner_being_ref':'foreign'}, {**paired, 'human':{'ref':'foreign'}}):
+        with unittest.TestCase().assertRaisesRegex(conversation.ConversationError,
+                'conversation_actual_home_pairing_required'):
+            conversation.verify_pairing(value, changed)
+
+
+def test_absent_observation_enters_bootstrap_instead_of_claiming_already_ready(tmp_path, monkeypatch):
+    bootstrap=conversation.Bootstrap(request())
+    monkeypatch.setattr(conversation,'JOURNAL',tmp_path/'journal')
+    monkeypatch.setattr(conversation,'trusted',lambda path, **kw:path)
+    bootstrap.observe=lambda:dict(state='absent',safe_to_execute=True)
+    bootstrap._apply_locked=lambda state:dict(state='ready',bootstrap='actually-created')
+    assert bootstrap.apply()==dict(state='ready',bootstrap='actually-created')

@@ -93,6 +93,40 @@ def test_native_receiving_controller_preserves_historical_acceptance_and_reports
         marker.chmod(0o600)
 
 
+def test_controller_observation_accepts_only_exact_native_observe_reader_addition(tmp_path):
+    import copy
+    from daimon_matrix import operator_capabilities as profiles
+    from daimon_matrix.keystore import EncryptedKeystore
+    from clusterctl.onboarding_custody import _native_run
+    if 'we.event.get' not in profiles.OPERATOR_CAPABILITY_PROFILES['observe']:
+        pytest.skip('requires the selected event-reader SDK')
+    # Selected-wheel qualification uses the real native holder subprocess, not
+    # the ordinary host adapter's separately pinned editable-install metadata.
+    ceremony, plan, target = receiving(tmp_path, run=_native_run)
+    target.activate(ceremony.authorize_target(plan, target.prepare()))
+    target.apply_credential(ceremony.authorize_credential(plan, target.credential_request()))
+    historical = copy.deepcopy(target.document_bundle())
+    provision_receiving_controller(target)
+    current = target.document_bundle()
+    store = EncryptedKeystore(target.package/'runtime/custody.json').open(target._reader)
+    signing = document(target.package/'activation.json')['body']['credential']['body']['signing_key']
+    # Caller-trusted archived-descriptor seam: this function observes the actual
+    # cryptographically bound current runtime; it never issues or edits grants.
+    for row in historical['capabilities']:
+        row['descriptor']['not_before_ms'] = 1
+        row['descriptor']['not_after_ms'] = 2
+        if row['profile']['role'] == 'observe':
+            row['descriptor']['methods'].remove('we.event.get')
+    comparison, proof = target._controller_comparison(historical, current, store, signing)
+    assert comparison['capabilities'] == historical['capabilities']
+    assert proof['runtime_sha256'] == digest(current)
+    changed = copy.deepcopy(historical)
+    row = next(row for row in changed['capabilities'] if row['profile']['role'] == 'observe')
+    row['descriptor']['methods'].remove('runtime.status')
+    with pytest.raises(OnboardingError, match='existing_onboarding_target_preserved'):
+        target._controller_comparison(changed, current, store, signing)
+
+
 def test_native_receiving_controller_rejects_tampering_and_wrong_custody(tmp_path):
     import copy
     from daimon_matrix import canonical, keystore, operator_capabilities
@@ -154,8 +188,8 @@ def test_native_receiving_controller_rejects_tampering_and_wrong_custody(tmp_pat
         assert target.observe()['phase']=='v8'
 
 
-def receiving(tmp_path):
-    ceremony, plan, _ = fixture(tmp_path)
+def receiving(tmp_path, run=None):
+    ceremony, plan, _ = fixture(tmp_path, run=run)
     ceremony.prepare(plan, identity_mode="first")
     host = ceremony.root / digest(plan)
     home = tmp_path / "guest"

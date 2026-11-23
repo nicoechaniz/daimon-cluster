@@ -89,6 +89,27 @@ def test_source_owner_adapter_uses_closed_command_and_drops_privileges_before_ex
     assert 0 < options["timeout"] <= 30
 
 
+def test_qualified_maintenance_selects_matching_installed_sdk_without_changing_serving_descriptor(adapter, tmp_path):
+    client, _, calls = adapter
+    client.code_uid = os.geteuid()
+    original = tmp_path/'private-sdk'/('a'*64)
+    client.venv, client.imports = original/'venv', original/'runtime-imports'
+    helper = tmp_path/'helper'
+    helper.mkdir()
+    (helper/'runtime-successor.json').write_text(json.dumps(dict(
+        schema='cluster-onboarding-runtime-successor/v4', sdk_digest='b'*64)))
+    client.maintenance = helper, 'c'*64
+    client.base_status = lambda: None
+    client._call(['--owner-base-status'], maintenance=True)
+    argv, options = calls[-1]
+    assert argv[0] == str(original.parent/('b'*64)/'venv/bin/python')
+    assert str(original.parent/('b'*64)/'runtime-imports') in argv
+    assert options['user'] == client.owner_uid and options['extra_groups'] == ()
+    assert client.venv == original/'venv' and client.imports == original/'runtime-imports'
+    client._call(['--owner-status'])
+    assert calls[-1][0][0] == str(client.venv/'bin/python')
+
+
 @pytest.mark.parametrize('seconds', [2, 300])
 def test_long_cohort_keeps_source_and_guest_maintenance_calls_bounded(adapter, tmp_path, monkeypatch, seconds):
     client, _, calls = adapter
@@ -624,7 +645,8 @@ def test_source_base_status_has_no_group_or_custody_prerequisite(adapter):
             {**expected, 'receiving_readiness':'ready'},
             {**expected, 'runtime_sha256':'c'*64},
             {**expected, 'process':{**process, 'pid':999}}):
-        result.clear(); result.update(bad)
+        result.clear()
+        result.update(bad)
         with pytest.raises(OnboardingError, match='base_owner_observation_conflict'):
             client.base_status()
 
@@ -658,7 +680,8 @@ def test_source_base_observation_uses_base_socket_and_pins_bundle_without_group(
         def __enter__(self):return self
         def __exit__(self,*args):pass
         def base_status(self):
-            if changed:being_seed._write(tmp_path/'runtime.json',{'local_origin':{'body':'foreign'}})
+            if changed:
+                being_seed._write(tmp_path/'runtime.json',{'local_origin':{'body':'foreign'}})
             return dict(schema='cluster-receiving-base-observation/v1', process={'pid':123},server={'body':'own'},
                 runtime_status={'local_origin':{'body':'own'},'loaded_runtime':{
                     'runtime_bundle_sha256':digest(bundle),'process_id':123}},receiving_readiness='unobserved')

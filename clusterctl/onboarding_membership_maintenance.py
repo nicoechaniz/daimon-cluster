@@ -32,6 +32,34 @@ class MembershipManager(WorkerManager):
     accepted_stop_exits = frozenset({('1', '0'), ('2', '15')})
     bind_process = staticmethod(bind_service_parent_process)
 
+    def start(self) -> None:
+        # Recovery of this operation-owned active baseline must not be stranded
+        # by systemd's start limiter after repeated finite maintenance attempts.
+        # The pause writer has already checked the unchanged unit definition.
+        if self.inspect()['result'] == 'start-limit-hit':
+            self._run('reset-failed', self.unit_name)
+        super().start()
+
+    def wait(self, baseline: dict, *, active: bool) -> dict:
+        try:
+            return super().wait(baseline, active=active)
+        except OnboardingError as error:
+            if active or str(error) != 'receiving_worker_drain_uncertain':
+                raise
+            current = self.inspect()
+            # A native CLI stopped by systemd TERM can report exit(1).
+            # Keep that failure truthful; it is not a successful worker drain.
+            # A terminal empty control-group is sufficient for the subsequent
+            # native-writer acquisition and ledger validation, never for health.
+            if (current['definition'] != baseline['definition']
+                    or (current['state'], current['substate'], current['result'],
+                        current['exit_code'], current['exit_status']) !=
+                        ('failed', 'failed', 'exit-code', '1', '1')
+                    or current['pid'] != '0' or current['job'] != '0'
+                    or current.get('control_group') != ''):
+                raise
+            return current
+
     def __init__(self, *, source: bool = False):
         if type(source) is not bool:
             raise OnboardingError('membership_service_scope_required')
@@ -141,7 +169,7 @@ def _serve_scope(pause: MembershipPause, reader: int, writer: int, *, deadline_n
             if pause.row is None:
                 raise OnboardingError('membership_scope_quiescence_lost')
             before = pause.row['expected_precondition']['baseline']
-            if (current['definition'] != before['definition'] or current['state'] != 'inactive'
+            if (current['definition'] != before['definition'] or current['state'] not in {'inactive', 'failed'}
                     or current['pid'] != '0' or current['job'] != '0'):
                 raise OnboardingError('membership_scope_quiescence_lost')
             frames.write({'sequence': request['sequence'], 'result': {'paused': True}})
@@ -205,7 +233,9 @@ def main(argv=None, *, manager_factory=MembershipManager) -> int:
     parser.add_argument('--observation-deadline-ns', type=int, required=True)
     args = parser.parse_args(argv)
     try:
-        if (str(uuid.UUID(args.operation_id)) != args.operation_id
+        original_id = args.operation_id.removeprefix('operation:')
+        if (str(uuid.UUID(original_id)) != original_id
+                or args.operation_id not in {original_id, 'operation:'+original_id}
                 or re.fullmatch('[0-9a-f]{64}', args.binding_sha256) is None
                 or not args.journal.is_absolute() or '..' in args.journal.parts):
             raise OnboardingError('membership_scope_binding_required')

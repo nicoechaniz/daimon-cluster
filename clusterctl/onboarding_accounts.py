@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from . import being_seed
-from .onboarding import Observation, OnboardingError, digest, private_directory
+from .onboarding import CONVERSATION_PLAN_SCHEMA, Observation, OnboardingError, digest, private_directory
 from .onboarding_actions import Actions, SCHEMA as ACTION_SCHEMA
 from .onboarding_provider import SCHEMA
 from .onboarding_service import publish
@@ -155,6 +155,9 @@ class ManagedAccount:
             if not self.host._mounted(plan, {device: mount}):
                 self.host._dispatch(plan, ['config', 'device', 'add', self.host.instance(plan), device,
                     'disk', *[key+'='+value for key, value in mount.items() if key != 'type']])
+            wait = getattr(self.host, '_wait_guest_mounts', None)
+            if wait:
+                wait(plan, {device: mount})
             self.host._dispatch(plan, ['exec', self.host.instance(plan), '--',
                 'python3', '-B', '-I', '-c', program, str(code), profile['account_id']])
         finally:
@@ -183,11 +186,12 @@ class ManagedAccount:
 
     def command(self, plan: dict, action: str) -> dict:
         _, code, _ = self.host._guest_paths(plan)
+        import_code = self.host._runtime_paths(plan, code)[0] if plan['schema'] == CONVERSATION_PLAN_SCHEMA else code
         launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                     'from clusterctl.onboarding_provider import main;raise SystemExit(main())')
         identity = [] if action == 'install' else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
         output = self.host._dispatch(plan, ['exec', self.host.instance(plan), *identity, '--',
-            'python3', '-B', '-I', '-c', launcher, str(code), action, '--code', str(code),
+            'python3', '-B', '-I', '-c', launcher, str(import_code), action, '--code', str(code),
             '--plan', '/home/agent/.onboarding-input/plan.json'])
         value = json.loads(output)
         if (not isinstance(value, dict) or action != 'install' and (
@@ -221,7 +225,7 @@ class ManagedAccount:
             # An actual authorized account/profile is enough to bootstrap a
             # human's Conversation. Do not manufacture a model turn as an
             # enrollment condition or mislabel configured login as inference.
-            return Observation('complete', dict(ssh_ready=True, provider_configured=True))
+            return Observation('complete', dict(verified=True, ssh_ready=True, provider_configured=True))
         receipt = value.get('probe_receipt')
         if receipt is None:
             return Observation('absent', safe_to_execute=True)
@@ -247,6 +251,9 @@ class ManagedAccount:
         if not self.host._mounted(plan, {'onboarding-account-public': mount}):
             self.host._dispatch(plan, ['config', 'device', 'add', self.host.instance(plan),
                 'onboarding-account-public', 'disk', *[key + '=' + value for key, value in mount.items() if key != 'type']])
+        wait = getattr(self.host, '_wait_guest_mounts', None)
+        if wait:
+            wait(plan, {'onboarding-account-public': mount})
         value = self.command(plan, 'observe')
         if value.get('authorized'):
             if value.get('account_id') != profile['account_id']:

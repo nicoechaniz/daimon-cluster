@@ -2,12 +2,12 @@
 
 ## Next-companion hold and single-command onboarding — 2026-11-08
 
-Nicolas reserved the next companion for a jointly observed timed onboarding
-after the full existing four-child delivery is ready and Nicolas begins that
-joint timing exercise with us. Do not provision that
-next identity, virtual, account, key, invitation or enrollment in advance.
-Its pairing/placement and exact human instruction are retained in the private
-receiving checkpoint. Finishing a component is not release of this hold.
+Honor the human's current explicit timing direction for the selected companion.
+Nicolas has now ordered Emma's actual admission for Jesi on ITACA; that direct
+instruction supersedes Emma's earlier waiting hold. Preserve the retained
+pairing, placement, original operation and later corrections in its private
+receiving checkpoint. An implementation test or partial stage alone never
+establishes creation, timed-trial completion or first human use.
 
 Every encountered onboarding defect must be repaired in the maintained route,
 not left as a required operator script. Once the required inputs are complete,

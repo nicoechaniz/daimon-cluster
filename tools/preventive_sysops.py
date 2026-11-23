@@ -434,10 +434,65 @@ def run_pass(config, *, run=command):
         os.close(lock)
 
 
+def reports_projection(result):
+    """Project review-safe evidence. The clock is provenance, not a trigger."""
+    if result.get("schema") != "cluster.preventive-sysops-result/v1":
+        raise ValueError("selected_sysops_receipt_required")
+    observed_at = datetime.datetime.fromisoformat(result["at"])
+    if observed_at.utcoffset() is None or type(result["paused"]) is not bool:
+        raise ValueError("invalid_sysops_receipt")
+    if not isinstance(result["targets"], list) or len(result["targets"]) > MAX_TARGETS:
+        raise ValueError("sysops_target_capacity")
+    if any(
+        not isinstance(result[key], dict) or len(result[key]) > MAX_JOBS
+        for key in ("pending", "failures")
+    ):
+        raise ValueError("sysops_state_capacity")
+    states = {"observed-partial", "attention", "unavailable"}
+    targets = {}
+    for row in result["targets"]:
+        name = row["id"]
+        state = result["semantic"].get(name)
+        if (
+            not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name)
+            or name in targets
+            or state not in states
+        ):
+            raise ValueError("invalid_sysops_target_state")
+        targets[name] = state
+    return {
+        "schema": "cluster.preventive-sysops-reports/v1",
+        "observed_at": observed_at.isoformat(),
+        "assessment": {
+            "state": "paused" if result["paused"] else "observed",
+            "coverage": "partial",
+            "targets": targets,
+            "pending_count": len(result["pending"]),
+            "failure_count": len(result["failures"]),
+        },
+    }
+
+
+def read_receipt(path):
+    with private(path).open("rb") as stream:
+        raw = stream.read(MAX_STATE + 1)
+    if len(raw) > MAX_STATE:
+        raise ValueError("sysops_state_capacity")
+    return json.loads(raw)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, required=True)
+    p.add_argument("--reports-output", type=Path)
+    p.add_argument(
+        "--project-current",
+        action="store_true",
+        help="Project the retained receipt without running a pass",
+    )
     a = p.parse_args()
+    if a.project_current and not a.reports_output:
+        p.error("--project-current requires --reports-output")
     os.umask(0o077)
 
     def expired(*_):
@@ -445,7 +500,16 @@ def main():
 
     signal.signal(signal.SIGALRM, expired)
     signal.alarm(300)
-    result = run_pass(json.loads(private(a.config).read_text()))
+    config = json.loads(private(a.config).read_text())
+    if a.project_current:
+        validate(config)
+        result = read_receipt(Path(config["state"]) / "CURRENT.json")
+    else:
+        result = run_pass(config)
+    if a.reports_output:
+        save(a.reports_output, reports_projection(result))
+    if a.project_current:
+        return
     print(
         json.dumps(
             {

@@ -162,3 +162,11 @@ Native Sol6.2 defaults were then written through the existing version-checked
 native config writer on all eight bodies, retaining prior effort/provider and
 all other effective configuration. Loaded/used models and persisted per-session
 selections retain their own independent migration evidence and open work.
+
+The fixed receiving unit can supply `--reports-output` to project its result
+into the existing restricted Reports directory. This replacing view contains
+only selected target states, aggregate pending/failure counts, a partial
+coverage flag and observation time. Select `/assessment` as the change source.
+The observation clock remains separately available as provenance and does not
+offer another native review after an unchanged pass. Use `--project-current`
+only to read and project the retained receipt without executing maintenance.

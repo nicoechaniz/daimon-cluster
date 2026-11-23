@@ -81,6 +81,10 @@ incident.
 Package transactions and incident delivery/missed-run supervision are marked as
 external producers, because they have their own invocation/effect receipts.
 This collector neither repeats those operations nor infers their completion.
+The Debian Chromium tracker may list the current version under `trixie`
+after the security upload reaches stable. Prefer `trixie (security)` while
+listed and otherwise use the exact `trixie` row. The installed version still
+has to match before applying the vendor assessment.
 The remaining general assessment gaps concern malicious releases and full
 application provenance, loaded state and exposure. Do not repeat a successful
 browser or cleanup operation merely to satisfy the retired static phase labels.

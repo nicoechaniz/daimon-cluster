@@ -696,6 +696,16 @@ Use one protected root-owned mode-0600 JSON spec (`cluster-receiving-maintenance
 Run from the qualified helper's supported interpreter/import context. Preserve
 `-B` (or `PYTHONDONTWRITEBYTECODE=1`) for every helper or diagnostic import:
 compiled cache files inside a sealed generation correctly invalidate its inventory.
+If a previously serving Source unit refuses startup, inspect the failing
+verification in that same interpreter context. When it identifies generated
+`__pycache__` directories outside the sealed import inventory, verify that the
+affected directories belong to the receiving owner and contain only generated
+`.pyc` files. Retain the exact directories and their original relative paths in
+one private sibling directory outside the import tree. Keep the sealed release,
+signed state, credentials and bytecode guard unchanged. Verify the original
+service with its authenticated receiving reader after systemd's existing retry.
+Legion's existing Codex body recovered this way on 23 November 2026. Its native
+receiving status and `we.heads` reads authenticated with the prior SDK.
 
 ```sh
 python -B -m clusterctl.receiving_maintenance --spec "$maintenance_spec" prepare

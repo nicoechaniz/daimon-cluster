@@ -487,6 +487,128 @@ keystore.EncryptedKeystore.create(destination.with_name('mixed-body.json'),
     assert (files(signing_path.parent) if signing_path.is_dir() else signing_path.read_bytes()) == signing_before
 
 
+def test_two_root_holder_replies_advance_both_managed_handoffs(tmp_path):
+    from types import SimpleNamespace
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from daimon_matrix import canonical, keystore, messaging_config as config, operator_rebirth
+    from clusterctl import being_seed, onboarding_enrollment as exchange
+    from clusterctl.onboarding_enrollment_root import main as signer
+    from clusterctl.onboarding_local_body import Requests
+    from tests.test_onboarding import plan as make_plan
+    from tests.test_onboarding_credential import two_root_authority
+    from tests.test_onboarding_local_body import request as local_request
+
+    plan = make_plan(name="qualify-two-roots")
+    now = time.time_ns() // 1_000_000
+    genesis, authority, origin, roots, seed = two_root_authority(
+        make_plan(name="qualify-source"), now
+    )
+    identity_document = {
+        "schema": "dm.onboarding.prepared-chat-identity/v1",
+        "authority": dict(schema=operator_rebirth.AUTHORITY_SCHEMA, control_artifacts=[genesis],
+                         control_head=authority.state.head, manifest=authority.manifest.value,
+                         credentials=list(authority.credentials.values()),
+                         incarnations=list(authority.incarnations.values())),
+        "authority_history": [],
+        "origin": origin,
+        "runtime_id": "fixture-runtime",
+        "runtime_label": "fixture",
+    }
+    binding = {
+        **config._public_identity(authority, origin, "fixture-runtime", "fixture", now),
+        "application_sha256": config.config_digest(identity_document),
+    }
+    signature = Ed25519PrivateKey.from_private_bytes(seed).sign(
+        config.BINDING_DOMAIN + canonical.canonical_bytes(binding)
+    )
+    source_identity = dict(document=identity_document, binding=dict(
+        schema=config.BINDING_SCHEMA, body=binding, signature=canonical.b64url(signature)
+    ))
+    routes = [dict(embodiment_id=origin["embodiment_id"],
+                   endpoint="http://127.0.0.1:19287/dm-peer/v1", timeout_ms=5000)]
+    state, progress, storage, home = (
+        tmp_path / name for name in ("portal", "progress", "worker", "target-home")
+    )
+    for path in (state, progress, storage, home):
+        path.mkdir(mode=0o700)
+    host = SimpleNamespace(
+        config=SimpleNamespace(
+            custody=storage, consent_state=state, consent_uid=os.geteuid(), progress=progress,
+        ),
+        _decision=lambda plan: {"matrix_identity_mode": "existing"},
+    )
+    worker = exchange.ExistingEnrollment(host)
+    task = local_request(plan["name"], plan["owner"], authority.state.being_ref)
+    Requests(progress, worker_uid=os.geteuid()).publish(task)
+    exchange.submit(state, task, None, dict(
+        schema=exchange.SOURCE, request_id=task["request_id"],
+        identity=source_identity, routes=routes,
+    ))
+    worker.prepare(plan, identity_mode="existing")
+    base = onboarding_existing.base_packet(
+        plan, source_identity, routes, expected_being_ref=authority.state.being_ref
+    )
+    target = Target(home, plan, base)
+    holders = []
+    for index, root_seed in enumerate(roots):
+        holder = tmp_path / f"holder-{index}.json"
+        password = tmp_path / f"holder-{index}.unlock"
+        secret = os.urandom(32).hex().encode("ascii")
+        keystore._atomic_write(password, secret)
+        keystore.EncryptedKeystore.create(
+            holder, lambda: bytearray(secret), control_head=authority.state.head,
+            secrets={"root.signing.v1:holder": root_seed},
+        )
+        holders.append((holder, password))
+
+    def answer(phase):
+        frame = exchange.Handoffs(progress, worker_uid=os.geteuid()).read(
+            plan["name"], owner=plan["owner"]
+        )
+        assert frame["phase"] == phase
+        frame_path = tmp_path / f"{phase}-handoff.json"
+        keystore._atomic_write(frame_path, canonical.canonical_bytes(frame))
+        combined_path = tmp_path / f"{phase}-combined.json"
+        common = ["--handoff", str(frame_path)]
+        replies = []
+        for index, (holder, password) in enumerate(holders):
+            partial = tmp_path / f"{phase}-holder-{index}.json"
+            with password.open("rb") as stream:
+                assert signer([*common, "--holder", str(holder), "--password-fd",
+                               str(os.dup(stream.fileno())), "--output", str(partial)]) == 0
+            assert len(document(partial)["response"]["shares"]) == 1
+            with pytest.raises(being_seed.SeedError, match="signed_reply_required"):
+                exchange.submit(state, task, frame, document(partial))
+            replies.append(str(partial))
+        combine = [*common, "--output", str(combined_path)]
+        assert signer([*combine, "--combine", replies[0], "--combine", replies[0]]) == 1
+        assert not combined_path.exists()
+        assert signer([*combine, "--combine", replies[1], "--combine", replies[0]]) == 0
+        reply = document(combined_path)
+        first = exchange.submit(state, task, frame, reply)
+        assert exchange.submit(state, task, frame, reply) == first
+
+    request = target.prepare()
+    assert worker.authorize_target(plan, request) is None
+    answer("enrollment")
+    activation = worker.authorize_target(plan, request)
+    assert target.activate(activation)["phase"] == "credential-pending"
+    credential = target.credential_request()
+    assert worker.authorize_credential(plan, credential) is None
+    answer("credential")
+    response = worker.authorize_credential(plan, credential)
+    assert target.apply_credential(response)["phase"] == "v8"
+    assert worker.authorize_credential(plan, credential) == response
+    admitted = worker.public_identity(plan)
+    successor = operator_rebirth.authority_from_document(admitted["authority"])
+    successor.validate_origin(admitted["origin"], require_active=True)
+    assert successor.validate_origin(origin, require_active=True) == authority.validate_origin(
+        origin, require_active=True
+    )
+    assert successor.state.root_policy == authority.state.root_policy
+
+
 def test_existing_enrollment_api_reuses_access_and_rejects_other_owner_and_forged_source(
     tmp_path,
     sealed_signer,

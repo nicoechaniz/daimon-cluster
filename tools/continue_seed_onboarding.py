@@ -268,9 +268,18 @@ def main(argv=None) -> int:
                     if not secret or len(secret) > 4096:
                         raise ContinuationError('existing_local_root_password_required')
                 # Open local custody only for a published exact handoff.
-                from clusterctl.onboarding_enrollment_root import sign
-                return sign(frame, args.holder or args.root_custody,
+                from clusterctl.onboarding import OnboardingError
+                from clusterctl.onboarding_enrollment_root import combine, sign
+                reply = sign(frame, args.holder or args.root_custody,
                     lambda:bytearray(secret), root_custody=args.root_custody is not None)
+                if set(reply["response"]) == {"shares"}:
+                    try:
+                        return combine(frame, [reply])
+                    except OnboardingError as error:
+                        if str(error) != "existing_enrollment_root_quorum_required":
+                            raise
+                        raise ContinuationError("existing_enrollment_public_quorum_required") from None
+                return reply
         inputs = {name:private_json(getattr(args, name + '_file'))
             if getattr(args, name + '_file') else None for name in ('source', 'connections', 'selection')}
         with state_directory(args.state) as directory:

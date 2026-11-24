@@ -1157,17 +1157,23 @@ threshold, request, frozen base and expiry before publishing target activation.
 An expired unanswered challenge is renewed without replacing the target's keys;
 old challenges and submissions remain preserved. Credential succession follows
 through the same handoff, using the target's native Body acceptance and the
-existing Root holder's signature. Managed admission derives its exact binding
+existing Root holders' signatures. Managed admission derives its exact binding
 from those independently verified public artifacts.
 
 The signer accepts the existing isolated native Root holder (`--holder`) or
 the historical native offline Root+Recovery store (`--root-custody`). The latter
-must match the exact current control head and Root policy, and cannot contain
-runtime Body or capability slots. Neither layout is rewritten or transported.
-The credential library can aggregate independent public shares for the V2
-credential and its succession. Managed receiving enrollment still accepts only
-Root threshold one while its credential handoff accepts a single combined
-response. It refuses other thresholds before receiving preparation.
+requires a one-signature policy, must match the exact current control head and
+Root policy, and cannot contain runtime Body or capability slots. Neither layout is rewritten or transported.
+For a multi-key threshold, sign the same handoff in each isolated holder.
+Run the signer with the same `--handoff` and a `--combine <reply>` argument
+per holder to verify and produce the single upload for each phase. This step
+receives only public replies and requires no password descriptor. The portal
+and worker revalidate the final native artifacts before advancing. The
+threshold-one signer still produces its upload directly. For distributed custody,
+run the finite participant continuation without holder arguments. It saves the
+exact `<request_digest>.handoff.json` before awaiting input. Use the signer
+to write the combined `<request_digest>.reply.json` in the same private state
+directory, then resume the same continuation.
 
 Intake evidence never grants host execution. Recorded owner consent, the host
 resource grant, native signature verification and canonical admission remain

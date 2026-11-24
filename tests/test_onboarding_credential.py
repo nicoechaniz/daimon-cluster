@@ -54,9 +54,7 @@ def test_separated_native_credential_and_succession_equal_native_full_constructo
     assert all(seed not in canonical_bytes(response) for seed in (signing, root))
 
 
-def test_two_root_holders_authorize_the_same_body_without_combining_private_custody(tmp_path):
-    plan, *_ = material(tmp_path)
-    now_ms = time.time_ns() // 1_000_000
+def two_root_authority(plan, now_ms):
     roots = [bytes([11]) * 32, bytes([12]) * 32]
     recovery = bytes([13]) * 32
     body_seed = bytes([14]) * 32
@@ -70,8 +68,8 @@ def test_two_root_holders_authorize_the_same_body_without_combining_private_cust
     state = identity.verify_genesis(genesis)
     credential = identity.create_embodiment_credential(
         state, roots, body_seed, identity.x25519_public(encryption_secret),
-        embodiment_id=origin["embodiment_id"], body_ref=origin["body_ref"], purposes=["messages"],
-        valid_from_ms=now_ms - 100, valid_until_ms=now_ms + 10000,
+        embodiment_id=origin["embodiment_id"], body_ref=origin["body_ref"], purposes=["dm.we", "messages"],
+        valid_from_ms=now_ms - 100, valid_until_ms=now_ms + 600_000,
         transport_principals=[dict(principal_id=origin["principal_id"], scheme="tribe-v1",
                                    key=identity.signing_descriptor(transport_seed))],
     )
@@ -87,6 +85,15 @@ def test_two_root_holders_authorize_the_same_body_without_combining_private_cust
             incarnation_authorization_id=incarnation["artifact_id"])]))
     previous = upgrade.RootAuthority(manifest, state, {credential["artifact_id"]: credential},
                                      {incarnation["artifact_id"]: incarnation})
+    return genesis, previous, origin, roots, body_seed
+
+
+def test_two_root_holders_authorize_the_same_body_without_combining_private_custody():
+    from tests.test_onboarding import plan as make_plan
+
+    plan = make_plan(name="qualify-genesis")
+    now_ms = time.time_ns() // 1_000_000
+    _, previous, origin, roots, body_seed = two_root_authority(plan, now_ms)
     request = upgrade.receiving_request(previous, origin, plan, body_seed, issued_at_ms=now_ms)
     left = upgrade.root_share(previous, plan, request, roots[0], observed_at_ms=now_ms)
     right = upgrade.root_share(previous, plan, request, roots[1], observed_at_ms=now_ms)

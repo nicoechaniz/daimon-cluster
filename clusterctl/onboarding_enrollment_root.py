@@ -12,10 +12,7 @@ from .onboarding_custody import document
 from .onboarding_enrollment import REPLY, ExistingEnrollment, validate_handoff
 
 
-def sign(
-    frame: dict, holder: Path, password_reader, *, root_custody: bool = False
-) -> dict:
-    """One native isolated holder process. Receiving keys are never inputs."""
+def _context(frame: dict):
     from daimon_matrix import operator_rebirth
 
     validate_handoff(frame)
@@ -40,6 +37,16 @@ def sign(
     )
     if request["body"]["origin"]["body_ref"] != "codex:daimon-cluster:" + plan["name"]:
         raise OnboardingError("onboarding_target_binding_conflict")
+    return payload, authority, request, now
+
+
+def sign(
+    frame: dict, holder: Path, password_reader, *, root_custody: bool = False
+) -> dict:
+    """One native isolated holder process. Receiving keys are never inputs."""
+    from daimon_matrix import operator_rebirth
+
+    payload, authority, request, now = _context(frame)
     seed = None
     if root_custody:
         from daimon_matrix import keystore
@@ -85,7 +92,7 @@ def sign(
             payload["activation"], authority, request=request
         )[1]
         onboarding_credential.validate_request(
-            previous, plan, payload["request"], observed_at_ms=now
+            previous, payload["plan"], payload["request"], observed_at_ms=now
         )
         # Native holder resolution verifies that the local key is in this
         # actual Root policy. No capability or source-body private key is read.
@@ -99,11 +106,52 @@ def sign(
             )
         if not isinstance(seed, bytes):
             raise OnboardingError("existing_enrollment_root_custody_rejected")
-        response = onboarding_credential.root_response(
-            previous, plan, payload["request"], seed, observed_at_ms=now
-        )
+        if authority.state.root_policy["threshold"] == 1:
+            response = onboarding_credential.root_response(
+                previous, payload["plan"], payload["request"], seed, observed_at_ms=now
+            )
+        else:
+            share = onboarding_credential.root_share(
+                previous, payload["plan"], payload["request"], seed, observed_at_ms=now
+            )
+            response = {"shares": [share]}
     return dict(schema=REPLY, request_digest=digest(payload), response=response)
 
+
+def combine(frame: dict, replies: list[dict]) -> dict:
+    """Verify public replies on one handoff and produce the existing upload."""
+    from daimon_matrix import operator_rebirth
+
+    payload, authority, request, now = _context(frame)
+    policy = authority.state.root_policy
+    if not policy["threshold"] <= len(replies) <= len(policy["keys"]):
+        raise OnboardingError("existing_enrollment_root_quorum_required")
+    shares = []
+    for reply in replies:
+        if (
+            set(reply) != {"schema", "request_digest", "response"}
+            or reply["schema"] != REPLY
+            or reply["request_digest"] != frame["request_digest"]
+            or not isinstance(reply["response"], dict)
+            or set(reply["response"]) != {"shares"}
+            or not isinstance(reply["response"]["shares"], list)
+            or len(reply["response"]["shares"]) != 1
+        ):
+            raise OnboardingError("invalid_existing_enrollment_reply")
+        shares.extend(reply["response"]["shares"])
+    if frame["phase"] == "enrollment":
+        operator_rebirth.aggregate_distributed_enrollment(
+            payload["intent"], request, authority, shares, observed_at_ms=now
+        )
+        response = {"shares": sorted(shares, key=lambda share: share["credential_signature"]["key_id"])}
+    else:
+        previous = operator_rebirth.validate_activation(
+            payload["activation"], authority, request=request
+        )[1]
+        response = onboarding_credential.aggregate_root_shares(
+            previous, payload["plan"], payload["request"], shares, observed_at_ms=now
+        )
+    return dict(schema=REPLY, request_digest=frame["request_digest"], response=response)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -112,17 +160,24 @@ def main(argv: list[str] | None = None) -> int:
     custody = parser.add_mutually_exclusive_group(required=True)
     custody.add_argument("--holder", type=Path)
     custody.add_argument("--root-custody", type=Path)
-    parser.add_argument("--password-fd", type=int, required=True)
+    custody.add_argument("--combine", type=Path, action="append", metavar="REPLY")
+    parser.add_argument("--password-fd", type=int)
     args = parser.parse_args(argv)
+    if (args.combine is None) != (args.password_fd is not None):
+        parser.error("--password-fd is required for signing and unavailable with --combine")
     try:
-        from daimon_matrix import operator_first_embodiment as first
+        frame = document(args.handoff)
+        if args.combine is not None:
+            reply = combine(frame, [document(path) for path in args.combine])
+        else:
+            from daimon_matrix import operator_first_embodiment as first
 
-        reply = sign(
-            document(args.handoff),
-            args.holder if args.holder is not None else args.root_custody,
-            lambda: first._password(args.password_fd),
-            root_custody=args.root_custody is not None,
-        )
+            reply = sign(
+                frame,
+                args.holder if args.holder is not None else args.root_custody,
+                lambda: first._password(args.password_fd),
+                root_custody=args.root_custody is not None,
+            )
         ExistingEnrollment._publish(args.output, reply)
         return 0
     except Exception:

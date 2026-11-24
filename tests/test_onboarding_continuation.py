@@ -113,6 +113,27 @@ def test_rerun_after_lost_ack_reuses_public_reply_and_received_inputs(tmp_path):
     assert len(list(state.glob('*.reply.json'))) == 2
 
 
+def test_continuation_resumes_with_public_quorum_staged_for_each_exact_handoff(tmp_path):
+    host = Host()
+    host.source_received = host.connected = host.queued = True
+    with client.state_directory(tmp_path / 'state') as state:
+        for phase in ('enrollment', 'credential'):
+            pending = client.continue_job(host, 'oliva', state, wait=host.wait,
+                clock=lambda:host.clock)
+            assert pending == dict(state='inputs-required', pending_inputs=['local_root_holder'])
+            expected = frame(phase)
+            fingerprint = expected['request_digest']
+            assert client.private_json(state / (fingerprint + '.handoff.json')) == expected
+            assert len(host.accepted) == ('enrollment', 'credential').index(phase)
+            client.publish(state / (fingerprint + '.reply.json'), dict(
+                schema='cluster-onboarding-enrollment-reply/v1',
+                request_digest=fingerprint, response={'combined_public_reply': phase},
+            ))
+        result = client.continue_job(host, 'oliva', state, wait=host.wait, clock=lambda:host.clock)
+    assert result['state'] == 'hosted-conversation-ready'
+    assert host.accepted == [frame(phase)['request_digest'] for phase in ('enrollment', 'credential')]
+
+
 def test_changed_root_or_handoff_payload_cannot_reuse_cached_signature(tmp_path):
     host = Host()
     host.source_received = host.connected = host.queued = True

@@ -1164,8 +1164,10 @@ The signer accepts the existing isolated native Root holder (`--holder`) or
 the historical native offline Root+Recovery store (`--root-custody`). The latter
 must match the exact current control head and Root policy, and cannot contain
 runtime Body or capability slots. Neither layout is rewritten or transported.
-The maintained receiving V2 credential adapter currently supports Root threshold
-one; unsupported thresholds are refused before receiving preparation.
+The credential library can aggregate independent public shares for the V2
+credential and its succession. Managed receiving enrollment still accepts only
+Root threshold one while its credential handoff accepts a single combined
+response. It refuses other thresholds before receiving preparation.
 
 Intake evidence never grants host execution. Recorded owner consent, the host
 resource grant, native signature verification and canonical admission remain

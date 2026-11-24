@@ -96,7 +96,15 @@ custody or payload field.
 
 Transfer only the canonical request to the root-custody boundary. Recheck its
 hash, expiry, being, base manifest, target origin, key-purpose separation and
-proof-of-possession fields. Then authorize it with the offline root command:
+proof-of-possession fields. For separate Root holders, generate a keyless
+distributed enrollment intent. Each holder signs the same authority, request
+and intent in its own custody boundary. Aggregate the public shares into the
+activation using the installed [Matrix split-custody ceremony](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/dm078-fresh-host-rebirth.md#split-custody-ceremony).
+If a challenge expires, retain the target preparation and renew the challenge
+through the supported request renewal before collecting new shares.
+
+Where an existing offline Root store is selected by custody policy, authorize
+with the offline root command:
 
 ```sh
 umask 077

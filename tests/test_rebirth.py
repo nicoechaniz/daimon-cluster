@@ -736,12 +736,10 @@ def test_rebirth_host_preserves_install_anchor_only_through_allowed_successors()
     retirement = "dm.we.embodiment-retirement/v1"
     recovery = "dm.we.recovery-rebirth/v1"
     history = [epoch("prior", recovery), epoch("install", retirement), epoch("retired", enrollment)]
-    preserves = rebirth_host._preserves_install_authority
-    assert preserves(history, "install", "current")
-    assert preserves(history, "current", "current")
-    assert not preserves(history, "unrelated", "current")
-    assert not preserves([], "install", "current")
-    assert not preserves(history + [epoch("current", recovery)], "install", "recovered")
+    predecessors = rebirth_host._verified_start_predecessors
+    assert predecessors(history) == {"install", "retired"}
+    assert not predecessors([])
+    assert not predecessors(history + [epoch("current", recovery)])
 
 
 def test_supervisor_fails_closed_without_shared_admission(short_tmp_path):

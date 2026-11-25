@@ -76,8 +76,9 @@ def select_profile(path: Path, candidate: dict, *, previous: dict) -> dict:
 
 
 def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_id: str,
-                 recover_operation_id: str | None = None) -> dict:
-    """Retain a qualified SDK-only successor under the caller's start lock.
+                 recover_operation_id: str | None = None,
+                 authority_predecessors: frozenset[str] = frozenset()) -> dict:
+    """Retain a qualified SDK or verified authority successor under the start lock.
 
     Preparation already verifies the protected owner selection. Starting still
     requires the ordinary singleton admission; this plans no physical effect.
@@ -128,9 +129,18 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
                 and (previous.get('result') or {}).get('schema') == 'dm.cluster.native-unready-recovery/v1'
                 and previous['result'].get('replacement_intent_hash') == digest(intent)))
             and not previous.get('runtime_observation') and not previous.get('logical_observation'))
+        manifest_field = 'successor_manifest_hash'
+        authority_only = (
+            previous['state'] == 'completed' and recover_operation_id is None
+            and prior.get(manifest_field) in authority_predecessors
+            and prior.get(manifest_field) != intent.get(manifest_field)
+            and {k: v for k, v in prior.items() if k != manifest_field}
+            == {k: v for k, v in intent.items() if k != manifest_field}
+        )
         if (previous['state'] != 'completed' and not recovering
-                or {k: v for k, v in prior.items() if k != 'runtime_call'}
-                != {k: v for k, v in intent.items() if k != 'runtime_call'}
+                or (not authority_only
+                    and {k: v for k, v in prior.items() if k != 'runtime_call'}
+                    != {k: v for k, v in intent.items() if k != 'runtime_call'})
                 or not isinstance(before, dict) or not isinstance(after, dict)
                 or set(before) != {'operation', 'selection'} or set(after) != set(before)
                 or before['operation'] != 'native-source' or after['operation'] != 'native-source'):

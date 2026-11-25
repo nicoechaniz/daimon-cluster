@@ -39,23 +39,18 @@ class RebirthHostError(RuntimeError):
     """Stable refusal at the fresh-embodiment process boundary."""
 
 
-def _preserves_install_authority(
-    history: list[dict[str, Any]], installed_manifest: str, current_manifest: str
-) -> bool:
-    if installed_manifest == current_manifest:
-        return True
+def _verified_start_predecessors(history: list[dict[str, Any]]) -> frozenset[str]:
     # The caller already verified the full linked Matrix authority history.
-    accepted = False
-    for epoch in history:
+    predecessors = set()
+    for epoch in reversed(history):
         successor = epoch["successor"]
-        if successor.get("previous_manifest_hash") == installed_manifest:
-            accepted = True
-        if accepted and successor["schema"] not in {
+        if successor["schema"] not in {
             "dm.we.embodiment-enrollment/v1",
             "dm.we.embodiment-retirement/v1",
         }:
-            return False
-    return accepted
+            break
+        predecessors.add(successor["previous_manifest_hash"])
+    return frozenset(predecessors)
 
 
 def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
@@ -82,6 +77,7 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         raise RebirthHostError("rebirth_host_install_receipt_missing")
     install_target = f"rebirth:{authority.manifest.being_ref}:{activation_id}"
     installed_manifest = result.get("successor_manifest_hash")
+    predecessors = _verified_start_predecessors(bundle["authority_history"])
     if (
         install is None
         or install["target"] != install_target
@@ -90,9 +86,7 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         or result.get("embodiment_id") != embodiment_id
         or result.get("incarnation_id") != origin.get("incarnation_id")
         or not isinstance(installed_manifest, str)
-        or not _preserves_install_authority(
-            bundle["authority_history"], installed_manifest, authority.manifest.digest
-        )
+        or (installed_manifest != authority.manifest.digest and installed_manifest not in predecessors)
     ):
         raise RebirthHostError("rebirth_host_install_receipt_missing")
     rollout_id = result.get("rollout_id")
@@ -144,6 +138,8 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         "activation_id": activation_id,
         "being_ref": authority.manifest.being_ref,
         "manifest_hash": authority.manifest.digest,
+        "installed_manifest_hash": installed_manifest,
+        "verified_predecessor_manifests": predecessors,
         "credential_id": credential_id,
         "origin": dict(origin),
         "rollout_gate": rollout_gate,
@@ -392,7 +388,7 @@ def _configured_admission_client(
             incarnation_id=identity["origin"]["incarnation_id"],
             activation_id=identity["activation_id"],
             credential_id=identity["credential_id"],
-            manifest_hash=identity["manifest_hash"],
+            manifest_hash=identity["installed_manifest_hash"],
             lease_ttl_s=lease_ttl_s,
         )
     except (AdmissionError, KeyError) as exception:
@@ -482,7 +478,7 @@ def launch_rebirth_host(
                 ("incarnation_id", origin["incarnation_id"]),
                 ("activation_id", identity["activation_id"]),
                 ("credential_id", identity["credential_id"]),
-                ("manifest_hash", identity["manifest_hash"]),
+                ("manifest_hash", identity["installed_manifest_hash"]),
             )
         ):
             raise AdmissionError("admission client identity mismatch")
@@ -512,7 +508,8 @@ def launch_rebirth_host(
             if native_selection is not None:
                 record = rebirth_native.start_record(
                     journal, target, intent, actor=actor, embodiment_id=embodiment_id,
-                    recover_operation_id=recover_native_start)
+                    recover_operation_id=recover_native_start,
+                    authority_predecessors=identity["verified_predecessor_manifests"])
             elif record is None:
                 record = journal.plan(
                     operation="rebirth-start",

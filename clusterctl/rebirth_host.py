@@ -39,6 +39,20 @@ class RebirthHostError(RuntimeError):
     """Stable refusal at the fresh-embodiment process boundary."""
 
 
+def _verified_start_predecessors(history: list[dict[str, Any]]) -> frozenset[str]:
+    # The caller already verified the full linked Matrix authority history.
+    predecessors = set()
+    for epoch in reversed(history):
+        successor = epoch["successor"]
+        if successor["schema"] not in {
+            "dm.we.embodiment-enrollment/v1",
+            "dm.we.embodiment-retirement/v1",
+        }:
+            break
+        predecessors.add(successor["previous_manifest_hash"])
+    return frozenset(predecessors)
+
+
 def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
     root = _owner_directory(matrix_root(state, embodiment_id))
     bundle = _read_json(root / "runtime.json")
@@ -62,6 +76,8 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
     if not isinstance(activation_id, str):
         raise RebirthHostError("rebirth_host_install_receipt_missing")
     install_target = f"rebirth:{authority.manifest.being_ref}:{activation_id}"
+    installed_manifest = result.get("successor_manifest_hash")
+    predecessors = _verified_start_predecessors(bundle["authority_history"])
     if (
         install is None
         or install["target"] != install_target
@@ -69,7 +85,8 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         or install["state"] != "completed"
         or result.get("embodiment_id") != embodiment_id
         or result.get("incarnation_id") != origin.get("incarnation_id")
-        or result.get("successor_manifest_hash") != authority.manifest.digest
+        or not isinstance(installed_manifest, str)
+        or (installed_manifest != authority.manifest.digest and installed_manifest not in predecessors)
     ):
         raise RebirthHostError("rebirth_host_install_receipt_missing")
     rollout_id = result.get("rollout_id")
@@ -92,6 +109,7 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         rollout_gate = {
             "rollout_id": rollout_id,
             "participant_embodiment_ids": participants,
+            "manifest_hash": installed_manifest,
         }
     history = bundle.get("authority_history")
     last_successor = (
@@ -109,6 +127,8 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
             for row in authority.manifest.value["embodiments"]
             if row.get("embodiment_id") == embodiment_id
         )
+        if member.get("status") != "active":
+            raise RebirthHostError("rebirth_host_runtime_rejected")
         credential_id = member["embodiment_credential_id"]
     except (KeyError, StopIteration, TypeError) as exception:
         raise RebirthHostError("rebirth_host_runtime_rejected") from exception
@@ -118,6 +138,8 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         "activation_id": activation_id,
         "being_ref": authority.manifest.being_ref,
         "manifest_hash": authority.manifest.digest,
+        "installed_manifest_hash": installed_manifest,
+        "verified_predecessor_manifests": predecessors,
         "credential_id": credential_id,
         "origin": dict(origin),
         "rollout_gate": rollout_gate,
@@ -366,7 +388,7 @@ def _configured_admission_client(
             incarnation_id=identity["origin"]["incarnation_id"],
             activation_id=identity["activation_id"],
             credential_id=identity["credential_id"],
-            manifest_hash=identity["manifest_hash"],
+            manifest_hash=identity["installed_manifest_hash"],
             lease_ttl_s=lease_ttl_s,
         )
     except (AdmissionError, KeyError) as exception:
@@ -421,7 +443,7 @@ def launch_rebirth_host(
                 state,
                 rollout_gate["rollout_id"],
                 rollout_gate["participant_embodiment_ids"],
-                identity["manifest_hash"],
+                rollout_gate["manifest_hash"],
             )
         except Exception as exception:
             os.close(password_descriptor)
@@ -456,7 +478,7 @@ def launch_rebirth_host(
                 ("incarnation_id", origin["incarnation_id"]),
                 ("activation_id", identity["activation_id"]),
                 ("credential_id", identity["credential_id"]),
-                ("manifest_hash", identity["manifest_hash"]),
+                ("manifest_hash", identity["installed_manifest_hash"]),
             )
         ):
             raise AdmissionError("admission client identity mismatch")
@@ -486,7 +508,8 @@ def launch_rebirth_host(
             if native_selection is not None:
                 record = rebirth_native.start_record(
                     journal, target, intent, actor=actor, embodiment_id=embodiment_id,
-                    recover_operation_id=recover_native_start)
+                    recover_operation_id=recover_native_start,
+                    authority_predecessors=identity["verified_predecessor_manifests"])
             elif record is None:
                 record = journal.plan(
                     operation="rebirth-start",

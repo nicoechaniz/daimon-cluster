@@ -349,6 +349,20 @@ def test_native_sdk_successor_keeps_original_start_and_reuses_admission(native_s
     finally:
         base._stop_rebirth_host(process)
 
+    verified_identity = rebirth_host._installed_identity(state, installed['embodiment_id'])
+    current_manifest = 'b' * 64
+    selected_identity = {**verified_identity, 'manifest_hash': current_manifest}
+    monkeypatch.setattr(rebirth_host, '_installed_identity', lambda *_: selected_identity)
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        start_stop()
+    selected_identity['verified_predecessor_manifests'] = frozenset({verified_identity['manifest_hash']})
+    retired = start_stop()
+    assert retired['intent']['successor_manifest_hash'] == current_manifest
+    assert retired['intent']['native_start_predecessor']['operation_id'] == repaired['operation_id']
+    assert journal.get(repaired['operation_id']) == repaired
+    assert start_stop()['operation_id'] == retired['operation_id']
+    assert rebirth_host._configured_admission_client(state, selected_identity).manifest_hash == verified_identity['manifest_hash']
+
 
 def _startup_intent():
     return {'schema': 'dm.cluster.rebirth-host-intent/v1', 'activation_id': 'activation',

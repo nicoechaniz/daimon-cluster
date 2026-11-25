@@ -728,6 +728,20 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
         assert restarted.returncode == 0, stderr
 
 
+def test_rebirth_host_preserves_install_anchor_only_through_allowed_successors():
+    def epoch(previous, kind):
+        return {"successor": {"previous_manifest_hash": previous, "schema": kind}}
+
+    enrollment = "dm.we.embodiment-enrollment/v1"
+    retirement = "dm.we.embodiment-retirement/v1"
+    recovery = "dm.we.recovery-rebirth/v1"
+    history = [epoch("prior", recovery), epoch("install", retirement), epoch("retired", enrollment)]
+    predecessors = rebirth_host._verified_start_predecessors
+    assert predecessors(history) == {"install", "retired"}
+    assert not predecessors([])
+    assert not predecessors(history + [epoch("current", recovery)])
+
+
 def test_supervisor_fails_closed_without_shared_admission(short_tmp_path):
     fixture, state, values = _install(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000

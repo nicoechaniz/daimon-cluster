@@ -47,6 +47,16 @@ the original identity/admission history. Unrelated intent changes still refuse.
 Do not overwrite or reset a start record to force startup; a known unready
 attempt uses only its explicitly retained recovery operation.
 
+An ordinary signed enrollment or retirement can advance the runtime authority
+of an existing active embodiment without issuing a new install or holder
+binding. H8 verifies the exact authority chain from its original installation
+and uses that original manifest for its distributed admission and hosting
+lease. The native child must prove readiness under the current manifest. The
+startup journal retains the completed predecessor and accepts the verified
+authority advance only with the same incarnation and identical native profile.
+Recovery and unrelated history still require their own installation and
+admission authority.
+
 For maintenance selection, use `rebirth_native.select_profile(path, candidate,
 previous=retained_previous)` under the existing operation. It reuses the canonical
 writer and Matrix selection lock, preserves config/home, rejects a concurrent

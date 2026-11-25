@@ -256,11 +256,13 @@ def approved_group_application(hosted, group_root: Path):
 
 
 def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
-                              expected_selection_sha256: str) -> dict:
+                              expected_selection_sha256: str,
+                              peer_history: tuple[str, list[dict]] | None = None) -> dict:
     """Advance an existing group selector after its application republication.
 
     The previous selector is authenticated in its own historical epoch. The
-    successor must be valid now, preserving the selected group and all routes.
+    successor must be valid now and preserve the selected group. An explicitly
+    refreshed peer's verified history can only extend the signed old history.
     A retained exact operation recovers a lost reply without re-signing history.
     The caller holds the native runtime writer and keeps egress stopped.
     """
@@ -284,6 +286,9 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
         operation = operations / (operation_id + '.json')
         command = dict(operation_id=operation_id,
             expected_selection_sha256=expected_selection_sha256)
+        if peer_history is not None:
+            ref, epochs = peer_history
+            command['peer_history_sha256'] = digest(dict(being_ref=ref, history=epochs))
         retained = being_seed._read(operation, limit=2 * being_seed.MAX_SELECTION) if operation.exists() else None
         predecessor = before if retained is None else retained['before']
         if (digest(predecessor) != expected_selection_sha256
@@ -293,6 +298,11 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
         application, _ = read_publication(hosted, group_root / 'application')
         document = copy.deepcopy(predecessor['document'])
         document['application_sha256'] = digest(application)
+        if peer_history is not None:
+            previous_history = document.get('authority_history', {}).get(ref)
+            if previous_history is None or epochs[:len(previous_history)] != previous_history:
+                raise OnboardingError('approved_onboarding_group_history_conflict')
+            document['authority_history'][ref] = copy.deepcopy(epochs)
         if retained is None:
             candidate = dict(document=document, binding=create_binding(hosted, document))
         else:
@@ -590,11 +600,12 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
     with being_seed._locked(group_root):
         before = being_seed._read(path, limit=being_seed.MAX_SELECTION) if path.exists() else None
         if before is not None:
-            approved_membership_authorities(group_root, bundle)
+            approved = approved_membership_authorities(group_root, bundle)
             verify_binding(hosted, before['document'], before['binding'])
             # Verification history is retained even after a member leaves. It
             # verifies old events; current native membership still owns rights.
             if any(authority_closure.get(ref, row) != row
+                    and not _extends_group_authority(approved[ref], authorities[ref])
                     for ref, row in before['document']['authority_closure'].items()):
                 raise OnboardingError('onboarding_group_membership_context_changed')
             authority_closure = {**before['document']['authority_closure'], **authority_closure}
@@ -644,7 +655,25 @@ def approved_group_authorities(runtime_root: Path, group_root: Path, bundle: dic
     current = read_application_authorities(runtime_root, 'runtime.json',
         Path(selected['directory']), at_ms=time.time_ns() // 1000000)
     from .onboarding_group_admission import merge_authorities
-    return merge_authorities(membership, _group_authorities_with_history(bundle, histories, current))
+    group = _group_authorities_with_history(bundle, histories, current)
+    for ref in membership.keys() & group.keys():
+        if _extends_group_authority(membership[ref], group[ref]):
+            # Membership retains its earlier signed verification context. A
+            # selected group publication can advance it along the same chain.
+            del membership[ref]
+    return merge_authorities(membership, group)
+
+
+def _extends_group_authority(incumbent, candidate) -> bool:
+    from daimon_matrix.authority_epochs import RootHistoryAuthority
+
+    return (isinstance(incumbent, RootHistoryAuthority)
+            and isinstance(candidate, RootHistoryAuthority)
+            and len(incumbent.historical) < len(candidate.historical)
+            and tuple(candidate.historical[:len(incumbent.historical) + 1])
+                == (*incumbent.historical, incumbent.active)
+            and tuple(candidate.successors[:len(incumbent.successors)])
+                == tuple(incumbent.successors))
 
 
 def _group_authorities_with_history(bundle: dict, histories: dict | None, current: dict) -> dict:

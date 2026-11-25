@@ -523,6 +523,13 @@ document remains in the operation record. Repeating the operation recovers the
 same successor without re-signing or rewriting history. Keep egress stopped
 until the runtime and required peers have accepted the coherent update.
 
+When the Matrix application has published a verified foreign group successor,
+pass its `peer_history=(being_ref, history)` to the same selector writer.
+The operation pins that exact history and requires it to retain the signed
+predecessor prefix. The older signed membership context remains usable as a
+historical anchor when the selected group chain extends it. This requires no
+bilateral route or replacement membership.
+
 Do not load the new runtime through an old current-state group selector while
 performing this transition. Retain the already verified foreign-authority closure
 for the offline native operation; after publication, ordinary startup must again

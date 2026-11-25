@@ -432,6 +432,34 @@ class Application:
             allowed = bool(reader and reader.enabled and self.selected(
                 home, payload['resource'], payload['version'], reader, False))
             return {'schema': 'dm.review-access/v1', **payload, 'allowed': allowed}
+        if operation == 'check-review-ownership':
+            # Catalog selection uses ownership of retained metadata. A
+            # visitor still needs separately authorized access to the bytes.
+            if (not isinstance(payload, dict) or set(payload) != {'actor_ref', 'editions'}
+                    or payload['actor_ref'] != owner.ref or not isinstance(payload['editions'], list)
+                    or not 1 <= len(payload['editions']) <= 16):
+                raise ValueError('invalid_review_ownership_scope')
+            requested = set()
+            for item in payload['editions']:
+                if (not isinstance(item, dict) or set(item) != {'resource', 'version'}
+                        or not isinstance(item['resource'], str) or not re.fullmatch('[a-f0-9]{32}', item['resource'])
+                        or not isinstance(item['version'], str) or not re.fullmatch('[a-f0-9]{64}', item['version'])):
+                    raise ValueError('invalid_review_ownership_scope')
+                requested.add((item['resource'], item['version']))
+            if len(requested) != len(payload['editions']):
+                raise ValueError('duplicate_review_ownership_selection')
+            # publication() checks the current serving projection against
+            # the registry and its immutable Home/owner binding. A version
+            # retained only in historical registry evidence may be retired.
+            current = {entry['artifact_ref']: entry for entry in self.publication(home)['entries']}
+            owned = []
+            for item in payload['editions']:
+                entry = current.get(item['resource'])
+                version = item['version']
+                if entry and (entry['version_ref'] == version or
+                              any(v['version_ref'] == version for v in entry.get('versions', ()))):
+                    owned.append(item)
+            return {'schema': 'dm.review-ownership/v1', 'actor_ref': owner.ref, 'owned': owned}
         if operation == "sync":
             if payload:
                 raise ValueError("home_sync_takes_no_manifest_from_client")

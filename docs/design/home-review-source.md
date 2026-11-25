@@ -64,3 +64,19 @@ owner_request helper; keep its existing custody local. Another home's resources
 require that home's authorized holder/adapter. The application must not accept
 actor claims from the browser, cache an allow after revocation or use a model
 author's identity when it cannot verify its participant.
+
+## Retained editions for the Home owner
+
+The private owner adapter accepts the read-only `check-review-ownership`
+operation. Send `actor_ref` for the enabled authenticated Home owner and
+`editions`, a list of 1–16 distinct `{resource, version}` pairs. Resource
+and version are exact lowercase hexadecimal references of length 32 and 64.
+The response `dm.review-ownership/v1` repeats the verified actor and returns
+`owned`, the submitted pairs still present in that Home's committed current
+or retained history. The current serving projection and registered ownership
+must agree. A retired version may remain in registry evidence and is omitted.
+
+A grant to read another person's source gives no owner result. The operation
+serves only the authenticated receiving Home and returns no media, leases,
+reader sessions or new sharing grants. Nexus still checks the visitor's
+ordinary table and exact-source permissions independently.

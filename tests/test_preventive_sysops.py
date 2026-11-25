@@ -59,6 +59,39 @@ class Sysops(unittest.TestCase):
             }
         ).encode()
 
+    def test_reports_projection_excludes_private_data_and_ignores_clock_in_assessment(
+        self,
+    ):
+        result = {
+            "schema": "cluster.preventive-sysops-result/v1",
+            "at": "2026-11-23T03:28:31+00:00",
+            "paused": False,
+            "targets": [{"id": "own", "observation": {"secret": "/private"}}],
+            "semantic": {"own": "observed-partial", "model:other": {"private": "name"}},
+            "pending": {"private-unit": {"owner": "private"}},
+            "failures": {},
+        }
+        projected = s.reports_projection(result)
+        self.assertEqual(
+            projected["assessment"],
+            {
+                "state": "observed",
+                "coverage": "partial",
+                "targets": {"own": "observed-partial"},
+                "pending_count": 1,
+                "failure_count": 0,
+            },
+        )
+        self.assertNotIn("private", json.dumps(projected))
+        result["at"] = "2026-11-24T03:28:31+00:00"
+        self.assertEqual(
+            s.reports_projection(result)["assessment"], projected["assessment"]
+        )
+        result["semantic"]["own"] = "attention"
+        self.assertNotEqual(
+            s.reports_projection(result)["assessment"], projected["assessment"]
+        )
+
     def test_due_job_acts_without_alert_or_model_and_never_repeats_uncertain(self):
         a = s.run_pass(self.config, run=self.command)
         self.assertEqual(len(a["pending"]), 1)

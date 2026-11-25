@@ -54,6 +54,79 @@ def test_separated_native_credential_and_succession_equal_native_full_constructo
     assert all(seed not in canonical_bytes(response) for seed in (signing, root))
 
 
+def two_root_authority(plan, now_ms):
+    roots = [bytes([11]) * 32, bytes([12]) * 32]
+    recovery = bytes([13]) * 32
+    body_seed = bytes([14]) * 32
+    transport_seed = bytes([15]) * 32
+    encryption_secret = bytes([16]) * 32
+    origin = dict(body_ref="codex:daimon-cluster:" + plan["name"], embodiment_id="embodiment:fixture",
+                  incarnation_id="incarnation:fixture", principal_id="fixture-principal")
+    genesis = identity.create_synthetic_genesis_in_process(
+        roots, 2, [recovery], 1, created_at_ms=now_ms - 1000, nonce=bytes([17]) * 32,
+    )
+    state = identity.verify_genesis(genesis)
+    credential = identity.create_embodiment_credential(
+        state, roots, body_seed, identity.x25519_public(encryption_secret),
+        embodiment_id=origin["embodiment_id"], body_ref=origin["body_ref"], purposes=["dm.we", "messages"],
+        valid_from_ms=now_ms - 100, valid_until_ms=now_ms + 600_000,
+        transport_principals=[dict(principal_id=origin["principal_id"], scheme="tribe-v1",
+                                   key=identity.signing_descriptor(transport_seed))],
+    )
+    incarnation = identity.create_incarnation_authorization(
+        credential, body_seed, incarnation_id=origin["incarnation_id"],
+        incarnation_sequence=0, started_at_ms=now_ms - 10,
+    )
+    manifest = upgrade.BeingManifest.from_value(dict(schema="being-manifest/v2",
+        being_ref=state.being_ref, control_head=state.head, history_binding_id=None, revision=1,
+        embodiments=[dict(body_ref=origin["body_ref"], embodiment_id=origin["embodiment_id"],
+            incarnation_id=origin["incarnation_id"], status="active",
+            embodiment_credential_id=credential["artifact_id"],
+            incarnation_authorization_id=incarnation["artifact_id"])]))
+    previous = upgrade.RootAuthority(manifest, state, {credential["artifact_id"]: credential},
+                                     {incarnation["artifact_id"]: incarnation})
+    return genesis, previous, origin, roots, body_seed
+
+
+def test_two_root_holders_authorize_the_same_body_without_combining_private_custody():
+    from tests.test_onboarding import plan as make_plan
+
+    plan = make_plan(name="qualify-genesis")
+    now_ms = time.time_ns() // 1_000_000
+    _, previous, origin, roots, body_seed = two_root_authority(plan, now_ms)
+    request = upgrade.receiving_request(previous, origin, plan, body_seed, issued_at_ms=now_ms)
+    left = upgrade.root_share(previous, plan, request, roots[0], observed_at_ms=now_ms)
+    right = upgrade.root_share(previous, plan, request, roots[1], observed_at_ms=now_ms)
+    assert all(secret not in canonical_bytes([request, left, right]) for secret in [body_seed, *roots])
+
+    def aggregate(shares):
+        return upgrade.aggregate_root_shares(previous, plan, request, shares, observed_at_ms=now_ms)
+
+    response = aggregate([right, left])
+    assert response == aggregate([left, right])
+    successor = upgrade.verify_response(previous, plan, request, response)
+    assert successor.manifest.value["embodiments"][0]["embodiment_id"] == origin["embodiment_id"]
+    assert successor.state.root_policy == previous.state.root_policy
+    native = authority_epochs.create_credential_succession(previous, successor,
+        embodiment_id=origin["embodiment_id"], incarnation_id=origin["incarnation_id"],
+        migration_id=digest(plan) + ":credential-v2", issued_at_ms=now_ms,
+        root_seeds=roots, signing_seed=body_seed)
+    assert response["succession"] == native
+
+    with pytest.raises(OnboardingError, match="root_quorum_required"):
+        aggregate([left])
+    with pytest.raises(OnboardingError, match="root_share_rejected"):
+        aggregate([left, left])
+    with pytest.raises(OnboardingError, match="root_share_rejected"):
+        aggregate([left, {**right, "succession_signature": left["succession_signature"]}])
+    with pytest.raises(OnboardingError, match="root_share_rejected"):
+        aggregate([left, {**right, "request_digest": "other-request"}])
+    forged = copy.deepcopy(right)
+    forged["succession_signature"]["value"] = left["succession_signature"]["value"]
+    with pytest.raises(OnboardingError, match="credential_response_rejected"):
+        aggregate([left, forged])
+
+
 @pytest.mark.parametrize("change", ["plan", "body", "validity", "origin", "time", "acceptance", "incarnation", "extra"])
 def test_invalid_public_request_is_refused_before_root_signature(tmp_path, monkeypatch, change):
     plan, bundle, previous, signing, root = material(tmp_path)

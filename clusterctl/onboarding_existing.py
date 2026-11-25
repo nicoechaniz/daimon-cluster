@@ -51,10 +51,6 @@ def validate_base(value: dict, plan: dict, *, code: Path | None = None,
         ).verify_identity(value["identity"])
         if authority.state.being_ref != value["expected_being_ref"]:
             raise ValueError("existing being")
-        # The maintained receiving V2 co-signature adapter currently signs
-        # one Root key. Refuse an unsupported policy before creating a body.
-        if authority.state.root_policy["threshold"] != 1:
-            raise ValueError("unsupported credential threshold")
         if any(
             row["body_ref"] == profile(plan)["body_ref"]
             for row in authority.manifest.value["embodiments"]

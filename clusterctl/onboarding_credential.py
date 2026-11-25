@@ -19,6 +19,7 @@ from .onboarding import OnboardingError, digest, validate_plan
 
 REQUEST = "cluster-onboarding-credential-request/v1"
 RESPONSE = "cluster-onboarding-credential-response/v1"
+ROOT_SHARE = "cluster-onboarding-credential-root-share/v1"
 FIELDS = {"schema", "plan_digest", "origin", "credential", "authorization", "issued_at_ms", "acceptance"}
 
 
@@ -150,25 +151,72 @@ def validate_request(previous: Any, plan: dict, request: dict, *, observed_at_ms
         raise OnboardingError("onboarding_credential_request_rejected") from None
 
 
-def root_response(previous: Any, plan: dict, request: dict, root_seed: bytes, *, observed_at_ms: int) -> dict:
-    """Called in the isolated Root actor; it never receives a Body seed."""
+def root_share(previous: Any, plan: dict, request: dict, root_seed: bytes, *, observed_at_ms: int) -> dict:
+    """Sign both public statements in one isolated Root holder."""
     core = validate_request(previous, plan, request, observed_at_ms=observed_at_ms)
+    key_id = identity.signing_descriptor(root_seed)["key_id"]
+    if key_id not in {key["key_id"] for key in previous.state.root_policy["keys"]}:
+        raise OnboardingError("onboarding_credential_root_share_rejected")
     credential = request["credential"]
     root_signature = identity._signature(root_seed, "root-authorization",
                                          domain_bytes(identity.CREDENTIAL_V2_DOMAIN, credential["body"]))
+    _, preimage = _preimage(core)
+    signature = dict(alg="Ed25519", kid=key_id,
+        value=b64url(Ed25519PrivateKey.from_private_bytes(root_seed).sign(preimage)))
+    return dict(schema=ROOT_SHARE, request_digest=digest(request),
+                credential_signature=root_signature, succession_signature=signature)
+
+
+def aggregate_root_shares(previous: Any, plan: dict, request: dict, shares: list[dict], *, observed_at_ms: int) -> dict:
+    """Build the native response from public shares and verify the quorum."""
+    core = validate_request(previous, plan, request, observed_at_ms=observed_at_ms)
+    request_digest = digest(request)
+    policy = previous.state.root_policy
+    policy_keys = {key["key_id"] for key in policy["keys"]}
+    credential_signatures = {}
+    succession_signatures = {}
+    if not policy["threshold"] <= len(shares) <= len(policy_keys):
+        raise OnboardingError("onboarding_credential_root_quorum_required")
+    for share in shares:
+        if (not isinstance(share, dict) or set(share) != {
+                "schema", "request_digest", "credential_signature", "succession_signature"}
+                or share["schema"] != ROOT_SHARE or share["request_digest"] != request_digest):
+            raise OnboardingError("onboarding_credential_root_share_rejected")
+        credential_signature = share["credential_signature"]
+        succession_signature = share["succession_signature"]
+        if (not isinstance(credential_signature, dict)
+                or set(credential_signature) != {"algorithm", "key_id", "role", "value"}
+                or credential_signature["algorithm"] != "Ed25519"
+                or credential_signature["role"] != "root-authorization"
+                or not isinstance(succession_signature, dict)
+                or set(succession_signature) != {"alg", "kid", "value"}
+                or succession_signature["alg"] != "Ed25519"):
+            raise OnboardingError("onboarding_credential_root_share_rejected")
+        key_id = credential_signature.get("key_id")
+        if (not isinstance(key_id, str) or key_id not in policy_keys
+                or succession_signature.get("kid") != key_id
+                or key_id in credential_signatures):
+            raise OnboardingError("onboarding_credential_root_share_rejected")
+        credential_signatures[key_id] = credential_signature
+        succession_signatures[key_id] = succession_signature
+    credential = request["credential"]
     completed = identity._artifact("embodiment-credential", credential["body"],
-                                   [*credential["signatures"], root_signature], version=2)
-    identity.verify_embodiment_credential(completed, previous.state, at_ms=observed_at_ms)
+                                   [*credential["signatures"], *credential_signatures.values()], version=2)
     member, _, _ = _member(previous, request["origin"])
     manifest = _manifest(previous, member, completed, request["authorization"])
-    content_hash, preimage = _preimage(core)
-    succession = {**core, "content_hash": content_hash, "acceptance": request["acceptance"], "signatures": [dict(
-        alg="Ed25519", kid=identity.signing_descriptor(root_seed)["key_id"],
-        value=b64url(Ed25519PrivateKey.from_private_bytes(root_seed).sign(preimage)))]}
-    response = dict(schema=RESPONSE, plan_digest=digest(plan), request_digest=digest(request),
+    content_hash, _ = _preimage(core)
+    succession = {**core, "content_hash": content_hash, "acceptance": request["acceptance"],
+                  "signatures": [succession_signatures[key] for key in sorted(succession_signatures)]}
+    response = dict(schema=RESPONSE, plan_digest=digest(plan), request_digest=request_digest,
                     credential=completed, authorization=request["authorization"], manifest=manifest, succession=succession)
     verify_response(previous, plan, request, response)
     return response
+
+
+def root_response(previous: Any, plan: dict, request: dict, root_seed: bytes, *, observed_at_ms: int) -> dict:
+    """Preserve the existing one-holder route."""
+    share = root_share(previous, plan, request, root_seed, observed_at_ms=observed_at_ms)
+    return aggregate_root_shares(previous, plan, request, [share], observed_at_ms=observed_at_ms)
 
 
 def verify_response(previous: Any, plan: dict, request: dict, response: dict) -> Any:

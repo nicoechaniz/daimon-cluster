@@ -170,3 +170,40 @@ def test_owner_credentials_are_not_rebound_by_configuration_changes(tmp_path):
         store.resolve("fixture-owner", home="home", origin="https://home.example")
         is None
     )
+
+
+def test_revoking_one_unclaimed_browser_request_preserves_new_code_and_sessions(tmp_path):
+    store = Sessions(tmp_path, clock=lambda: 1000)
+    actor = Actor('human:jesi', 'human', 'v1', 'Jesi')
+    old, old_proof = store.request(home='login', origin='https://auth.example')
+    new, new_proof = store.request(home='login', origin='https://auth.example')
+    for request in (old, new):
+        store.approve(home='login', code=request['code'], subject=actor)
+    other = store.issue(home='other', origin='https://other.example', subject=actor)
+    assert store.revoke_request(home='login', code=old['code'], subject=actor) == {'status':'revoked'}
+    assert store.revoke_request(home='login', code=old['code'], subject=actor) == {'status':'revoked'}
+    with pytest.raises(ValueError, match='home_pairing_unavailable'):
+        store.claim(home='login', origin='https://auth.example', code=old['code'],
+                    proof=old_proof, current_actor=lambda *args: actor)
+    status, _ = store.claim(home='login', origin='https://auth.example', code=new['code'],
+                          proof=new_proof, current_actor=lambda *args: actor)
+    assert status['status'] == 'approved'
+    assert store.resolve(other, home='other', origin='https://other.example') is not None
+    from contextlib import closing
+    with closing(store.connect()) as db:
+        assert db.execute('SELECT count(*) FROM requests').fetchone()[0] == 2
+
+
+def test_request_revocation_refuses_foreign_or_already_claimed_browser(tmp_path):
+    store = Sessions(tmp_path, clock=lambda: 1000)
+    actor = Actor('human:jesi', 'human', 'v1', 'Jesi')
+    request, proof = store.request(home='login', origin='https://auth.example')
+    store.approve(home='login', code=request['code'], subject=actor)
+    for home, subject in [('other', actor), ('login', Actor('human:other','human','v1','Other'))]:
+        with pytest.raises(ValueError, match='home_browser_request_mismatch'):
+            store.revoke_request(home=home, code=request['code'], subject=subject)
+    _, token = store.claim(home='login', origin='https://auth.example', code=request['code'],
+                           proof=proof, current_actor=lambda *args: actor)
+    with pytest.raises(ValueError, match='home_browser_request_already_claimed'):
+        store.revoke_request(home='login', code=request['code'], subject=actor)
+    assert store.resolve(token, home='login', origin='https://auth.example') is not None

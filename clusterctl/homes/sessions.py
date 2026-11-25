@@ -296,6 +296,31 @@ class Sessions:
                 db.rollback()
                 raise
 
+    def revoke_request(self, *, home, code, subject):
+        """Expire one unclaimed browser proof, retaining its audit row.
+
+        A claimed request requires its exact session logout; never replace a
+        request-specific revocation with an actor-wide session revocation.
+        """
+        if not subject.enabled or subject.kind != 'human':
+            raise ValueError('home_actor_disabled')
+        with closing(self.connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                row = db.execute('SELECT * FROM requests WHERE code=?', (code,)).fetchone()
+                if (not row or row['home'] != home or row['actor'] != subject.ref
+                        or row['revision'] != subject.revision):
+                    raise ValueError('home_browser_request_mismatch')
+                if row['claimed']:
+                    raise ValueError('home_browser_request_already_claimed')
+                db.execute('UPDATE requests SET expires=min(expires,?) WHERE code=?',
+                           (self.now(db), code))
+                db.commit()
+                return {'status': 'revoked'}
+            except BaseException:
+                db.rollback()
+                raise
+
     def claim(self, *, home, origin, code, proof, current_actor):
         with closing(self.connect()) as db:
             db.execute("BEGIN IMMEDIATE")

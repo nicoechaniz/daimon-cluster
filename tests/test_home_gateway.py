@@ -181,6 +181,60 @@ def test_current_and_historical_audiences_both_required(tmp_path):
     assert not app.selected("one", "a" * 32, "current", authority.actor("human-one"))
 
 
+def test_holodeck_review_proof_requires_current_service_and_retained_ownership(tmp_path):
+    from types import SimpleNamespace
+    authority = Authority()
+    author = 'dm:being:v1:' + 'a' * 43
+    outsider = 'dm:being:v1:' + 'b' * 43
+    for ref in (author, outsider):
+        authority.people[ref] = Actor(ref, 'being', 'v1', ref)
+
+    def backend(entry):
+        return SimpleNamespace(state=lambda: {'schema': 1, 'entries': [entry]})
+
+    previous = selected('a' * 32, 'human', revision='2' * 64)
+    current = selected('a' * 32, 'human', versions=[previous])
+    other = selected('b' * 32, 'public')
+    homes = {
+        'one': {'owner_being_ref': 'owner-one', 'owner_revision': 'v1',
+                'owner_token_file': key(tmp_path, 'owner', 'one-key')},
+        'two': {'owner_being_ref': author, 'owner_revision': 'v1',
+                'owner_token_file': key(tmp_path, 'author', 'two-key')},
+    }
+    app = Application({'homes': homes}, authority, Sessions(tmp_path / 'state'),
+                      backends={'one': backend(other), 'two': backend(current)})
+    app.owner('one', 'one-key', 'sync', {})
+    app.owner('two', 'two-key', 'sync', {})
+    admitted = {author, outsider}
+    wanted_key = 's-' + 'a' * 24
+    app.service_deployments = SimpleNamespace(
+        access=lambda app, home, actor, key, *, service:
+        home == 'one' and key == wanted_key and service == 'holodeck' and actor.ref in admitted)
+    payload = {'actor_ref': author, 'service_key': wanted_key,
+               'resource': previous['artifact_ref'], 'version': previous['version_ref']}
+
+    def proof(**changes):
+        supplied = {**payload, **changes}
+        reply = app.owner('one', 'one-key', 'check-holodeck-review-ownership', supplied)
+        assert reply == {'schema': 'dm.holodeck-review-ownership/v1', **supplied, 'owned': reply['owned']}
+        return reply['owned']
+
+    assert proof()
+    assert proof(version=current['version_ref'])
+    assert not proof(actor_ref=outsider)
+    assert not proof(resource=other['artifact_ref'], version=other['version_ref'])
+    assert not proof(service_key='s-' + 'b' * 24)
+    admitted.remove(author)
+    assert not proof()
+    admitted.add(author)
+    current['versions'] = []
+    app.owner('two', 'two-key', 'sync', {})
+    assert not proof()
+    assert proof(version=current['version_ref'])
+    with pytest.raises(ValueError):
+        app.owner('one', 'two-key', 'check-holodeck-review-ownership', payload)
+
+
 def test_historical_grant_cannot_be_rewritten_by_local_publisher(tmp_path):
     authority = Authority()
     registry = Registry(Sessions(tmp_path))

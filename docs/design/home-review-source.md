@@ -64,3 +64,18 @@ owner_request helper; keep its existing custody local. Another home's resources
 require that home's authorized holder/adapter. The application must not accept
 actor claims from the browser, cache an allow after revocation or use a model
 author's identity when it cannot verify its participant.
+
+## Holodeck source ownership
+
+The private owner adapter accepts `check-holodeck-review-ownership` with
+`actor_ref`, `service_key`, `resource` and `version`. The owner binding and
+service key must match the current registered Holodeck App. The actor must
+be a current being admitted through that App's selected audience. The
+registry must bind the exact resource to that actor, and the owning Home's
+current publication must retain the version.
+
+The reply `dm.holodeck-review-ownership/v1` echoes the exact scope and a
+boolean `owned` decision. The trusted Holodeck bridge establishes the actor
+from the receiving native lane before using this operation. Ordinary
+visitor table admission, version access and viewer tokens follow their
+existing contracts.

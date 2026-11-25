@@ -71,6 +71,9 @@ class Endpoint:
         if self.source:
             self.arguments.append('--source')
         owner.maintenance = self.candidate
+        prepare = getattr(owner, 'prepare_helper', None)
+        if callable(prepare):
+            prepare()
 
     def command(self, *, recovery=False):
         command = code_command(self.python, self.code, MODULE,

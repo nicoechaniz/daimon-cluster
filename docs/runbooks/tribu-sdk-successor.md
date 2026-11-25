@@ -1401,6 +1401,22 @@ readiness EOF must not mask that exception as a generic not-ready result.
 
 ## Current admitted maintenance observation (#270)
 
+Catalog-mutating maintenance helpers must use an SDK compatible with the
+receiver's actual retained receipt formats. Metadata/signature qualification
+alone does not establish that compatibility. Reuse the receiver's selected SDK
+for application/visibility publication rather than an older observer helper;
+this does not change the body's serving code or SDK. Prepare the helper's
+qualified read-only mount before interrupting its Matrix service.
+
+Before a first additive application write, the owner publication path validates
+the current installed visibility and retained catalogs with that helper. A
+refusal leaves the application unchanged. If the application successor already
+committed, reconcile the same native intent forward: predecessor visibility can
+still describe the old application and is not a reason to repeat or roll back
+the accepted write. Keep the native receipt, exact original operation and
+pending/uncertain messages. Finish authenticated reader selection afterward;
+service startup alone is not reader readiness or communication acceptance.
+
 The qualified helper's explicit `admitted-running --require-loaded
 --current-native` path composes the existing authenticated base status, group
 qualified identity, current admission and kernel child/parent observations. It
@@ -1575,6 +1591,16 @@ remains at most 60 seconds and cannot extend that original envelope. Its authent
 observation freezes the existing group
 coordinates and signed application/publication hashes. The same closed group
 must remain after startup; a published outbound adapter cannot use this path.
+For a closed group, the same retained native-code update explicitly prepares
+catalogs after confirmed quiescence and before selecting the successor. It uses
+the selected SDK's existing native catalog migrator under the exclusive runtime
+writer, preserving runtime identity, keys, signed publication and message rows.
+Missing groups or installed outbound visibility refuse before runtime load.
+The original update retains the migration receipt; a lost acknowledgment retries
+the same idempotent step. Older retained updates keep their original step set;
+new operations record catalog preparation before any effect. This is not serving startup or permission to reopen
+outbound messaging. An additive migration remains after software failure:
+recover forward with compatible code, without restoring old data over later effects.
 Do not rerun enrollment, controller issuance or group publication to update code.
 The owner retains one current and one previous completed record, at most64KiB
 each; a new operation can replace only a completed receipt. An unfinished or
@@ -1587,6 +1613,14 @@ it still verifies the signed application and freezes its selection/publication.
 Appearance or removal of an adapter changes the frozen group. Use the existing
 owner optional-controller `issue` stage/publication for the retained body; this
 adds the control role, not human authorization, a new enrollment or outbound release.
+
+When enabling its first visibility adapter, use the existing native owner
+publication and unit writers with the already prepared SDK. If the initial
+catalog migration encounters an authenticated closed-key catalog, the publisher
+uses `adopt_closed_visibility_catalogs` and completes that same publication.
+Do not rebuild every SDK, reenroll the body or recreate pending messages for this
+storage-key transition. Prepare the full-visibility entrypoint before publishing:
+the old receive-only entrypoint refuses an installation once it exists.
 
 For this explicit closed composition, `observe_current_reader(receive_only=True)`
 checks actual process, identity, controlled roster, wire/store compatibility and
@@ -1641,6 +1675,52 @@ owner configuration. Each owner can attest that exact document with its existing
 publication policy or a human-delivery receipt. Keep one exact protected intent
 and the original bindings for the bounded operation.
 
+Portable Conversation destinations use the same preparation path. The helper
+reuses the selected SDK's native v3 policy validator and portable v2 disclosure
+contract, including its exact risk statement. Resolve the public descriptor from
+the actual paired Conversation publisher; do not substitute Telegram metadata.
+Prepared signatures must match the final native disclosure byte for byte after
+the application update. The successor qualification covers both destination
+types, additive publication with a lost acknowledgment, and first portable
+publication over initialized receive-only catalogs without replacing history.
+
+The existing owner `visibility-disclosure` and `visibility-accept` commands
+accept an optional boolean `prospective`. Set it to true for this preparation
+phase. Acceptance recomputes the complete disclosure from current signed
+membership, verified Roots and the selected destination before using the native
+binding signer; altered scope or participants refuse. These retained bindings
+are not an installed visibility policy. Final native publication still validates
+them against the completed application. Additive `application` commands can reuse
+the existing `receive_import` references from that same operation; private keys
+stay inside the owner transport and import store.
+
+`context-preview` computes prospective pins without retaining an owner operation.
+Before private resource transfer, complete the first publication preparation
+through the existing guarded owner writer with that expected context hash.
+This retains the operation's context; the transfer then binds to that exact
+record. A preview hash alone cannot authorize an import, and a missing retained
+context must not be repaired by creating another key or resetting a store.
+Relay fan-out from one owner shares its nonblocking private journal lock;
+serialize that source's exports instead of launching concurrent exports against
+the same journal. Independent owners can still prepare concurrently.
+
+For several Conversation destinations, one prospective `visibility-accept` call
+can carry `approved_destinations` in disclosure order, with
+`approved_destination: null`. The lists must have identical lengths and every
+destination/scope is revalidated before signing. Use this existing bounded batch
+instead of one cold owner invocation per surface: serial eight-surface calls
+exhausted an actual maintenance window. Existing single-destination commands
+remain unchanged. Preserve any earlier partial receipts when consolidating the
+remaining preparation; this batch installs no policy or message.
+
+After scoped Matrix maintenance, a completed reader barrier can require renewal
+even when software pins are unchanged. The current-reader route recognizes the
+authenticated native process-instance change, preserves the completed barrier
+as its predecessor and derives fresh control IDs from the new instances. It
+keeps identity, selected software and membership checks, and refuses to supersede
+an unfinished barrier or a different operator's revocation. Do not replay old
+process-bound controls or repeat admission to recover an ordinary restart.
+
 The normal native application/visibility publisher must still validate the
 prepared document against the fully published current application and complete
 acceptance set before selection. A changed membership or authority must refuse;
@@ -1670,3 +1750,116 @@ a cold receiver can still be loading. Observe its actual child/listeners and the
 qualify the current reader. Preserve any exhausted-start-limit refusal; after the
 completed publication is verified, clear that unit's failed state and start the
 same supported unit. Never substitute a global Stop or replay message input.
+
+
+## Membership verification survives owner restart
+
+The offline relationship writer retains its approved public verification closure
+in the existing signed `membership-authorities.json` context before accepting
+foreign membership events for an active member. After acceptance it refreshes
+the current-member snapshot; a new entrant first retains that context when its
+own membership becomes active. This runs inside the existing native writer in
+both one-shot and finite-session paths. Reads and invitation inspection remain
+read-only. It does not install a messaging application, enable outbound release,
+change native identity or create another admission ceremony.
+
+This ordering prevents a restart from encountering an already accepted foreign
+event whose public signer was only available in the temporary admission process.
+Exact native request/result recovery is preserved if a response or the final
+context write is interrupted. Context uses the native owner's clock, and a
+signed application's current Root pin cannot truncate retained Root history.
+
+For a predecessor already in `authorize / verification_failed`, diagnose the
+underlying closed verification category under its real runtime writer lock. If
+the demonstrated cause is a missing admitted public signer, reuse the existing
+`group-publication` / `membership-authorities` action with the retained approved
+public closure and exact previous-selection CAS. Keep signed stores and sends;
+never clear the offending event, reenroll, weaken verification or replay speech.
+Use the actual qualified runtime/profile for the selected body, not an unrelated
+historical helper. Private request files must belong to that executing owner
+with mode 0600; the existing CLI also supports stdin.
+
+After scoped Matrix restart, restore the actually installed current readers
+through existing owner observation and conditional controls. Compare their
+actual signed audience, membership proofs and authority requirements; preserve
+each owner's signed lineage provenance and use its own current roster CAS. An
+admitted being without a messaging application remains explicitly unavailable.
+Confirm authenticated reader readiness and recovery of the same Alerts incident
+at a higher revision. Notification delivery and automatic heartbeat attention
+remain separate effects. See Cluster #232 for the demonstrated incident and the
+remaining entrant messaging/current-reader completion.
+### Status-only maintenance observers
+
+The compact `runtime.status(view="receiving")` read requires the existing
+`runtime.status` grant. Do not infer its availability from a separate `scope.me`
+permission. Use the compact read for current identity, loaded startup and reader
+qualification, with fallback only after the authenticated `invalid_params`
+unsupported-view refusal. Permission/availability errors do not authorize fallback.
+Retained owner reads preserve exact compact request bytes and fresh native output;
+existing ordinary-read requests keep their distinct binding/prefix. This avoids
+projecting full retained history during routine health/maintenance deadlines.
+
+### Complete readers after group publication
+
+A coordinator that already holds the required owner adapters and the approved
+loaded selections uses `onboarding_receiving_update.refresh_current_readers`
+after application, visibility or selector changes. The receive-only admission
+continuation accepts code/SDK changes only; do not reuse it for changed group
+publication pins. Pass the existing maintenance operation UUID, release digest,
+absolute deadline (at most480seconds), and one private progress checkpoint.
+Mark the original non-admitted Source owner through `nonadmitted`; admitted
+guests keep their native admission requirement.
+
+The helper reuses authenticated observations, native conditional revoke/select
+and final complete-cohort observation. It retains exact control bytes before
+dispatch, preserves lost acknowledgments and original effect deadlines, and
+performs no lifecycle, enrollment, publication or model work. Matching reader
+vectors need no native writes. Use `preflight_reader_checkpoint` before new
+lifecycle work: unresolved predecessors are preserved. The checkpoint and one
+completed `.previous.json` use the existing2MiB record cap; obsolete process or
+expired-control generations retain bounded history and a retirement digest.
+Native owner journals remain the effect authority. Reader completion establishes
+`qualified-local-projection`; actual useful communication remains separate.
+
+This composition reuses the maintained upstream reader completion implementation
+and its focused tests; it does not introduce another maintenance transport.
+
+For an explicitly selected first portable visibility installation, the existing
+`visibility-publish` owner command creates the missing32byte local receipt-proof
+key in its private visibility directory. It retains the key across retries and
+never replaces an existing key or repairs a missing key in an already installed
+policy. This is a local publication receipt key, not a being identity, account
+credential or new grant. Existing Telegram preparation remains unchanged.
+
+A receive-only entrant's first full group publication must also select a full
+service entrypoint. The membership maintenance guard deliberately holds the unit
+selection lock and preserves its definition; do not call `select_entrypoint`
+from a second process inside that guard. Reuse `prepare_guest_admission` and
+`GuestBootstrapController` for this transition, with the explicit retained request
+field `entrypoint_mode: published-group`. It prepares the existing full-mode
+command while the prior installation is absent. Its linked full publication
+snapshot must establish the new application, visibility, selector and preserved
+stores before the existing root route selects/starts the service. The serving SDK
+and signed runtime remain unchanged. Requests without that field preserve their
+original inferred entrypoint, including historical receive-only operations.
+
+Loaded Source observation and its pre-control observation also use the compact
+receiving status view on both base and selected group sockets. Historical/full
+status remains only for legacy callers or an authenticated `invalid_params`
+unsupported-view response. A fast base compact status does not alone prove group
+reader availability; retain the actual qualified group proof and original control
+outcome. Do not restart a healthy base process to repair an observer timeout.
+
+When original-job reader restoration needs a corrected maintenance observer, pass
+`maintenance_updates` to `advance_receive_only(..., select_current=True)`: an
+owner-name map of qualified `code`, `code_digest`, and its unchanged `journal`.
+The existing Endpoint verifies/prepares that compatible helper. The original
+admission preparation, serving selection and exact pending native controls stay
+unchanged. The original job retains the selected helper map for continuation,
+with one previous map; the installed body is not relabeled or upgraded. This is
+maintenance code repair, not a fresh admission, control request or deadline.
+
+For a qualified Source operator refusal, `onboarding_source --diagnostics`
+adds a bounded error category/type and module/line/function frames on stderr. Ordinary responses and service
+logs retain their generic refusal; private paths and free-form messages stay
+redacted. Inspect the underlying category before retrying a publication phase.

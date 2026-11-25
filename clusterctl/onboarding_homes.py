@@ -473,6 +473,10 @@ class IncusProvider:
                 "0600",
             ]
         )
+        human_reader = value['binding'].get('schema') == 'dm.home-human-client/v1'
+        if human_reader:
+            run(['exec', instance, '--', 'python3', destination+'/provision.py',
+                 '--home', '/home/agent', '--prepare-human-client'])
         repository = Path(placement["repository"])
         with tempfile.TemporaryDirectory(
             prefix="home-skill-bundle-", dir=self.store.root
@@ -531,11 +535,14 @@ class IncusProvider:
                 "/home/agent/.local/state/daimon-home/skills-source",
             ]
         )
-        self.deliver(placement, value, instance)
+        receiving = self.deliver(placement, value, instance)
         selected = hashlib.sha256(
             json.dumps(placement, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        return {"state": "complete", "selection_digest": selected}
+        result = {"state": "complete", "selection_digest": selected}
+        if human_reader:
+            result["human_endpoint"] = receiving
+        return result
 
     def deliver(self, placement, declaration, instance):
         """Only verified service/routing/grant delivery yields completion."""
@@ -559,21 +566,24 @@ class IncusProvider:
             raise OnboardingError("home_delivery_owner_conflict")
         binding = declaration["binding"]
         access = binding.get("access", {})
+        human_reader = binding.get('schema') == 'dm.home-human-client/v1'
+        owner_url = home['public_url'] if human_reader else f"http://127.0.0.1:{config['owner_port']}"
         if (
             access.get("home_ref") != details["home_ref"]
-            or access.get("owner_url") != f"http://127.0.0.1:{config['owner_port']}"
+            or access.get("owner_url") != owner_url
             or binding.get("public_url") != home["public_url"]
-            or binding.get("vpn_url") != home["vpn_url"]
+            or (binding.get('being_ref') != details['owner_being_ref'] if human_reader
+                else binding.get("vpn_url") != home["vpn_url"])
         ):
             raise OnboardingError("matching_home_receiving_binding_required")
         validate_config(
             {**config, "homes": {**config["homes"], details["home_ref"]: home}},
             credential_uid=uid,
         )
-        # Transport only the two resource-scoped home credentials, not any
-        # Matrix, account, bot, SSH or custody material.
+        # Readers receive only their own Home owner credential. Full Home hosts
+        # also receive the gateway credential; no Matrix/account/custody keys.
         destinations = access
-        for field in ("gateway_token_file", "owner_token_file"):
+        for field in (("owner_token_file",) if human_reader else ("gateway_token_file", "owner_token_file")):
             destination = Path(destinations[field])
             if (
                 destination.parent != Path("/home/agent/.config/daimon-home")
@@ -604,6 +614,18 @@ class IncusProvider:
                     "0600",
                 ]
             )
+        if human_reader:
+            raw = self.backend.run(['exec', instance, '--user', '1000', '--group', '1000',
+                '--', '/home/agent/.local/bin/daimon-home', 'human'])
+            if len(raw) > 65536:
+                raise OnboardingError('human_client_projection_capacity')
+            result = json.loads(raw)
+            if (result.get('schema') != 'dm.human-endpoint/v1'
+                    or result.get('home_ref') != details['home_ref']
+                    or result.get('owner_being_ref') != details['owner_being_ref']
+                    or result.get('route_state') != 'configured'):
+                raise OnboardingError('human_client_receiving_unconfirmed')
+            return result
         with tempfile.TemporaryDirectory(
             prefix="home-service-", dir=self.store.root
         ) as temporary:

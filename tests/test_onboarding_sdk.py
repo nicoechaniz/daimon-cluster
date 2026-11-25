@@ -585,3 +585,34 @@ def test_explicit_import_cache_retirement_needs_existing_tree_and_exclusive_lock
     assert onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid(), retire_bytecode=True) == imports
     assert source.read_bytes() == original and not cache.exists()
     assert onboarding_sdk.runtime_imports(venv, code, code_uid=os.geteuid()) == imports
+
+
+@pytest.mark.parametrize('bad', [None, 'source', 'magic', 'name'])
+def test_explicit_retirement_handles_pytest_cache_without_accepting_changed_sources(tmp_path, bad):
+    import hashlib
+    import importlib.util
+    import sys
+    root = tmp_path / 'imports'
+    root.mkdir(mode=0o700)
+    source = root / 'module.py'
+    source.write_bytes(b'value = 1\n')
+    source.chmod(0o600)
+    files = {'module.py':hashlib.sha256(source.read_bytes()).hexdigest()}
+    caches = root / '__pycache__'
+    caches.mkdir(mode=0o700)
+    name = 'module.' + sys.implementation.cache_tag + '-pytest-9.0.2.pyc'
+    if bad == 'name':
+        name = name.replace('pytest-9.0.2', 'unrecognized-9.0.2')
+    cache = caches / name
+    cache.write_bytes((b'bad!' if bad == 'magic' else importlib.util.MAGIC_NUMBER) + b'0'*12)
+    cache.chmod(0o600)
+    if bad == 'source':
+        source.write_bytes(b'value = 2\n')
+    if bad:
+        with pytest.raises(OnboardingError, match='qualified_runtime_imports_required'):
+            onboarding_sdk._retire_import_bytecode(root, files)
+        assert cache.exists()
+    else:
+        onboarding_sdk._retire_import_bytecode(root, files)
+        assert not cache.exists() and not caches.exists()
+        assert source.read_bytes() == b'value = 1\n'

@@ -263,23 +263,25 @@ def provision(home, declaration, *, repository, install=install_skill):
     ):
         raise ValueError("invalid_home_receiving_declaration")
     binding = declaration["binding"]
-    store = Path(binding["store"])
-    if (
-        not store.is_absolute()
-        or ".." in store.parts
-        or any(p.is_symlink() for p in (store, *store.parents))
-    ):
-        raise ValueError("owned_artifact_store_required")
-    if store.is_relative_to(home):
-        directory(store, home)
-    elif (
-        not store.is_dir()
-        or store.stat().st_uid != os.geteuid()
-        or store.stat().st_mode & 0o077
-    ):
-        # Reuse an explicitly configured durable external store; an owner-local
-        # bootstrap cannot allocate an unknown external host resource.
-        raise ValueError("existing_owned_artifact_store_required")
+    human_reader = binding.get('schema') == 'dm.home-human-client/v1'
+    if not human_reader:
+        store = Path(binding["store"])
+        if (
+            not store.is_absolute()
+            or ".." in store.parts
+            or any(p.is_symlink() for p in (store, *store.parents))
+        ):
+            raise ValueError("owned_artifact_store_required")
+        if store.is_relative_to(home):
+            directory(store, home)
+        elif (
+            not store.is_dir()
+            or store.stat().st_uid != os.geteuid()
+            or store.stat().st_mode & 0o077
+        ):
+            # Reuse an explicitly configured durable external store; an owner-local
+            # bootstrap cannot allocate an unknown external host resource.
+            raise ValueError("existing_owned_artifact_store_required")
     # Use the published helper's existing receiving contract after installation;
     # it validates URLs, ports/store and public ring selection.
     state = home / ".local/state/daimon-home/provision"
@@ -316,7 +318,7 @@ def provision(home, declaration, *, repository, install=install_skill):
             ),
         }
         pointer = home / ".codex/AGENTS.md"
-        if pointer.exists():
+        if pointer.exists() and not human_reader:
             targets["pointer"] = (
                 pointer,
                 owner_pointer(regular(pointer), binding["public_url"]),
@@ -353,6 +355,28 @@ def provision(home, declaration, *, repository, install=install_skill):
         return receipt
 
 
+def prepare_human_client_home(home, uid, gid):
+    """Create only the client directory; retain the protected config parent."""
+    home = Path(home)
+    parent = home / '.config'
+    info = parent.lstat()
+    if (home.is_symlink() or home.stat().st_uid != uid
+            or not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid)
+            or info.st_mode & 0o022):
+        raise ValueError('owned_client_home_required')
+    before = (info.st_uid, info.st_gid, info.st_mode, info.st_ino)
+    target = parent / 'daimon-home'
+    if not target.exists() and not target.is_symlink():
+        target.mkdir(mode=0o700)
+        os.chown(target, uid, gid)
+    info = target.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_mode & 0o077:
+        raise ValueError('private_human_client_directory_required')
+    info = parent.lstat()
+    if (info.st_uid, info.st_gid, info.st_mode, info.st_ino) != before:
+        raise ValueError('existing_config_parent_preserved')
+
+
 def install_service(
     candidate,
     previous,
@@ -384,10 +408,21 @@ def main():
     parser.add_argument("--declaration", type=Path)
     parser.add_argument("--repository", type=Path)
     parser.add_argument("--unit-file", type=Path)
+    parser.add_argument("--prepare-human-client", action="store_true")
     parser.add_argument("--source-bundle", type=Path)
     parser.add_argument("--previous-unit-sha256")
     args = parser.parse_args()
     try:
+        if args.prepare_human_client:
+            import pwd
+            if os.geteuid() != 0 or args.home != Path('/home/agent'):
+                raise ValueError('human_client_operator_required')
+            account = pwd.getpwnam('agent')
+            if account.pw_uid != 1000:
+                raise ValueError('qualified_guest_owner_required')
+            prepare_human_client_home(args.home, account.pw_uid, account.pw_gid)
+            print(json.dumps({'status': 'client-directory-ready'}))
+            return
         if args.source_bundle:
             if not args.home or not args.repository:
                 raise ValueError("complete_home_source_selection_required")

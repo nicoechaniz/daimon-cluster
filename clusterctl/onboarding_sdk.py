@@ -220,7 +220,14 @@ def _retire_import_bytecode(target: Path, files: dict[str, str]) -> None:
             try:
                 source = Path(importlib.util.source_from_cache(str(path))).relative_to(target).as_posix()
             except (ValueError, NotImplementedError):
-                raise OnboardingError('qualified_runtime_imports_required') from None
+                # Pytest assertion rewriting uses a versioned cache filename
+                # that source_from_cache cannot parse. It is still disposable
+                # bytecode, never an approved import or executable fallback.
+                tag = re.escape(sys.implementation.cache_tag or '')
+                match = re.fullmatch(r'(.+)\.' + tag + r'-pytest-[0-9]+(?:\.[0-9]+){1,3}\.pyc', path.name)
+                if match is None:
+                    raise OnboardingError('qualified_runtime_imports_required') from None
+                source = (path.parent.parent / (match[1] + '.py')).relative_to(target).as_posix()
             if (path.parent.name != '__pycache__' or path.suffix != '.pyc' or source not in files
                     or len(raw) < 16 or raw[:4] != importlib.util.MAGIC_NUMBER):
                 raise OnboardingError('qualified_runtime_imports_required')

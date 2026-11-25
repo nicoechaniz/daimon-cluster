@@ -523,7 +523,6 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
     The caller's protected owner context supplies approval of the public roots.
     This signs neither a messaging application nor an outbound installation.
     """
-    import time
     import uuid
     import re
     from daimon_matrix.messaging_config import create_binding, verify_binding
@@ -564,7 +563,7 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
         if (None if before is None else digest(before)) != expected_selection_sha256:
             raise OnboardingError('onboarding_group_membership_context_changed')
         relationships = hosted.service.relationships
-        with relationships.store.authorization_view(at_ms=time.time_ns() // 1000000,
+        with relationships.store.authorization_view(at_ms=hosted.service.clock(),
                 card_verifier=relationships.card_verifier, busy_timeout_ms=0) as view:
             tribe = view.tribes.get(tribe_ref)
             own = bundle['manifest']['being_ref']

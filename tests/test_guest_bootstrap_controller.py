@@ -370,9 +370,17 @@ def test_journal_and_jobs_are_owned_during_both_typed_routes(fixture, action):
 
 
 @pytest.mark.parametrize("native", [False, True])
-def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_root(fixture, monkeypatch, native):
+@pytest.mark.parametrize("receive_only", [False, True])
+def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_root(fixture, monkeypatch, native, receive_only):
     controller, backend, calls, _ = fixture
     row, frozen, candidate = controller._row()
+    if receive_only:
+        frozen['owner']['group']['installation_sha256'] = None
+        frozen['owner']['group_sha256'] = digest(frozen['owner']['group'])
+        candidate['argv'] = command(Path('/opt/daimon-onboarding') / frozen['plan']['release_digest'],
+            receive_only=True, runtime_code=Path('/opt/daimon-onboarding-runtime') / candidate['runtime_digest'],
+            runtime_digest=candidate['runtime_digest'])
+        row['expected_precondition']['guest_bootstraps']['eko'] = copy.deepcopy(frozen)
     manifest = dict(provenance={'matrix_revision': candidate['prepared']['matrix_revision']},
         artifacts={'matrix_sdk': candidate['prepared']['matrix_wheel_sha256']},
         required_receivers=[{'artifacts': {'receiving_code': candidate['runtime_digest']}}])
@@ -1089,3 +1097,35 @@ def test_guest_lifecycle_keeps_one_deadline_across_preflight_and_both_routes(fix
         assert calls[-1] == 'admitted-running'
         assert backend.starts == 1
         assert 'controlled_loaded' not in controller.journal.get(controller.operation_id)['runtime_observation']['guest_bootstraps']['eko']
+
+
+@pytest.mark.parametrize('mode', ['published-group', None, 'unsupported', 'missing-link'])
+def test_first_group_visibility_entrypoint_requires_explicit_linked_snapshot(fixture, mode):
+    controller, backend, _calls, _current, _snapshots = admission_guest_fixture(fixture)
+    row = controller._row()[0]
+    before = copy.deepcopy(row['expected_precondition'])
+    frozen = before['guest_bootstraps']['eko']['owner']
+    frozen['group']['installation_sha256'] = None
+    frozen['group_sha256'] = digest(frozen['group'])
+    candidate = copy.deepcopy(row['intended_transition']['guest_bootstraps']['eko'])
+    if mode is not None:
+        candidate['entrypoint_mode'] = 'published-group' if mode == 'missing-link' else mode
+    if mode == 'missing-link':
+        candidate.pop('admission_link')
+    base = Path('/opt/daimon-onboarding') / before['guest_bootstraps']['eko']['plan']['release_digest']
+    candidate['argv'] = command(base, receive_only=mode is None,
+        visibility=None if mode is None else Path(frozen['group']['selected']['visibility']),
+        runtime_code=Path('/opt/daimon-onboarding-runtime') / candidate['runtime_digest'],
+        runtime_digest=candidate['runtime_digest'])
+    planned = plan_update(controller.journal, manifest_digest='a' * 64,
+        target='first-full-group:' + str(mode), expected_precondition=before,
+        intended_transition={'guest_bootstraps': {'eko': candidate}}, audit_identity={'actor': 'fixture'})
+    selected = GuestBootstrapController(controller.journal, planned['operation_id'], backend, 'eko')
+    if mode in {'unsupported', 'missing-link'}:
+        with pytest.raises(OnboardingError, match='bootstrap_binding_conflict'):
+            selected._row()
+    else:
+        actual = selected._row()[2]['argv']
+        assert ('--receive-only' in actual) == (mode is None)
+        assert ('--visibility-installation' in actual) == (mode == 'published-group')
+    assert backend.stops == backend.starts == backend.publications == 0

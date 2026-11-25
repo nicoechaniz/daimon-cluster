@@ -264,6 +264,8 @@ def test_retained_status_keeps_exact_request_but_reads_current_result(tmp_path, 
         assert control.RetainedStatusOwner._status_response(owner,client)['ok'] is False
         assert files[0].read_bytes()==saved and calls.count('status-prepare')==1
         assert len(sent)==3 and all(request==sent[0] for request in sent)
+        assert sent[0]['params']=={'view':'receiving'}
+        assert set(capability.methods)=={'runtime.status'}
     finally:
         observer.__exit__()
         listener.close()

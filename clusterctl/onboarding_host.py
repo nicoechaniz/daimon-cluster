@@ -7,6 +7,7 @@ maintained installer; no command from a source archive is executed.
 from __future__ import annotations
 
 import json
+import copy
 import hashlib
 import inspect
 import math
@@ -30,13 +31,15 @@ def sha(value: object) -> bool:
 
 
 RUNTIME_SELECTION_KEYS = frozenset({'runtime_code', 'runtime_digest', 'runtime_by_name'})
+WARM_SELECTION_KEYS = RUNTIME_SELECTION_KEYS | {'conversation_bundle_default'}
 
 
 class CurrentHostConfig:
     """Refresh verified runtime selectors without moving a warm worker's roots.
 
     Exact changed configuration is fully validated once. Runtime selection may
-    advance; jobs/grants/account/admission/Telegram directories, home placements
+    advance, including the immutable App default for future jobs;
+    jobs/grants/account/admission/Telegram directories, home placements
     and other process configuration require their separate explicit lifecycle.
     """
     def __init__(self, path: Path):
@@ -45,7 +48,7 @@ class CurrentHostConfig:
         self._config = HostConfig.load(path, expected_value=self._value)
         if being_seed._read(path) != self._value:
             raise OnboardingError('onboarding_worker_configuration_changed')
-        self._fixed = {key: value for key, value in self._value.items() if key not in RUNTIME_SELECTION_KEYS}
+        self._fixed = {key: value for key, value in self._value.items() if key not in WARM_SELECTION_KEYS}
         self._lock = threading.Lock()
 
     def current(self) -> HostConfig:
@@ -56,7 +59,7 @@ class CurrentHostConfig:
         value = being_seed._read(self.path)
         if value == self._value:
             return self._config
-        if {key: item for key, item in value.items() if key not in RUNTIME_SELECTION_KEYS} != self._fixed:
+        if {key: item for key, item in value.items() if key not in WARM_SELECTION_KEYS} != self._fixed:
             raise OnboardingError('onboarding_worker_configuration_restart_required')
         candidate = HostConfig.load(self.path, expected_value=value)
         if being_seed._read(self.path) != value:
@@ -104,6 +107,8 @@ class HostConfig:
     conversation_proxy_by_name: dict[str, dict] | None = None
     instance_type: str = 'container'
     conversation_bundle_by_name: dict[str, tuple[Path, str]] | None = None
+    conversation_bundle_default: tuple[Path, str] | None = None
+    conversation_settings_by_name: dict[str, dict] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -114,7 +119,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "conversation_bundle_default", "conversation_settings_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -309,31 +314,48 @@ class HostConfig:
                 if request['name'] != name or digest(request) != row['request_digest']:
                     raise OnboardingError('conversation_selection_changed')
                 conversation_by_name[name] = (Path(row['request']), row['request_digest'])
+        conversation_settings_by_name = None
+        if 'conversation_settings_by_name' in value:
+            from .onboarding_conversation import prepare_intent
+            selected = value['conversation_settings_by_name']
+            if (not isinstance(selected, dict) or not 1 <= len(selected) <= 64
+                    or any(not isinstance(name, str) or not being_seed.NAME.fullmatch(name)
+                           for name in selected)):
+                raise OnboardingError('conversation_selection_required')
+            for name, settings in selected.items():
+                prepare_intent(name, '0'*64, settings)
+            conversation_settings_by_name = copy.deepcopy(selected)
+        conversation_names = set(conversation_by_name or {}) | set(conversation_settings_by_name or {})
         conversation_proxy_by_name = None
         if 'conversation_proxy_by_name' in value:
             from .onboarding_conversation_proxy import configuration as proxy_configuration
             conversation_proxy_by_name = proxy_configuration(value['conversation_proxy_by_name'])
-            if conversation_by_name is None or set(conversation_proxy_by_name) - set(conversation_by_name):
+            if set(conversation_proxy_by_name) - conversation_names:
                 raise OnboardingError('conversation_proxy_configuration_required')
             for name, listener in conversation_proxy_by_name.items():
                 vm = listener.get('vm')
                 if (vm is not None) != (value.get('instance_type', 'container') == 'virtual-machine'):
                     raise OnboardingError('conversation_proxy_placement_unsupported')
                 if vm is not None:
-                    request = document(conversation_by_name[name][0])
+                    request = (document(conversation_by_name[name][0]) if conversation_by_name and name in conversation_by_name
+                        else prepare_intent(name, '0'*64, (conversation_settings_by_name or {})[name]))
                     if request.get('listen_host') != vm['address']:
                         raise OnboardingError('conversation_proxy_vm_network_required')
         conversation_bundle_by_name = None
         if 'conversation_bundle_by_name' in value:
             from .onboarding_conversation_bundle import configuration as bundle_configuration
             conversation_bundle_by_name = bundle_configuration(value['conversation_bundle_by_name'])
-            if conversation_by_name is None or set(conversation_bundle_by_name) - set(conversation_by_name):
+            if set(conversation_bundle_by_name) - conversation_names:
                 raise OnboardingError('conversation_bundle_selection_required')
+        conversation_bundle_default = None
+        if 'conversation_bundle_default' in value:
+            from .onboarding_conversation_bundle import configuration as bundle_configuration
+            conversation_bundle_default = bundle_configuration({'default': value['conversation_bundle_default']})['default']
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
                    consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name,
-                   value.get("instance_type", "container"), conversation_bundle_by_name)
+                   value.get("instance_type", "container"), conversation_bundle_by_name, conversation_bundle_default, conversation_settings_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -391,7 +413,12 @@ class HostBackend:
         """Resolve verified code placement without changing the service profile."""
         body = self.native_body(plan)
         physical = getattr(self.run, 'body_for', None)
-        return physical(plan) if body is None and physical is not None else body
+        if body is None and physical is not None:
+            return physical(plan)
+        if body is None and self.config.instance_type == 'virtual-machine':
+            from .vm_body import admitted_local_runtime_body
+            return admitted_local_runtime_body(self, plan)
+        return body
 
     def body_python(self, plan: dict) -> Path:
         native = self.native_body(plan)
@@ -743,14 +770,10 @@ class HostBackend:
                if self.config.instance_type == 'virtual-machine' else {})})
 
     def _conversation_request(self, plan: dict) -> dict | None:
-        from .onboarding_conversation import resolve_request
-        selected = (self.config.conversation_by_name or {}).get(plan['name'])
-        if selected is None:
+        from .onboarding_conversation import host_request, resolve_request
+        value = host_request(self.config, plan)
+        if value is None:
             return None
-        value = document(selected[0])
-        if (digest(value) != selected[1] or value.get('name') != plan['name']
-                or value.get('plan_digest') != digest(plan)):
-            raise OnboardingError('conversation_selection_changed')
         identity = self._ceremony(plan).admission_coordinates(plan)
         return resolve_request(value, identity['being_ref'])
 
@@ -1448,10 +1471,10 @@ class HostBackend:
         return decision(self.config, proposal)
 
     def _conversation_bundle_mount(self, plan: dict) -> dict:
-        selected = (self.config.conversation_bundle_by_name or {}).get(plan['name'])
+        from .onboarding_conversation_bundle import verify, selected_bundle
+        selected = selected_bundle(self.config, plan)
         if selected is None:
             return {}
-        from .onboarding_conversation_bundle import verify
         root, fingerprint = selected
         verify(root, fingerprint, uid=os.geteuid())
         return {'onboarding-app': dict(type='disk', source=str(root),
@@ -1812,7 +1835,7 @@ while True:
         elif control_file is not None or control_command is not None or control_value is not None:
             raise OnboardingError('invalid_receiving_control_request')
         if observation_timeout_seconds is not None:
-            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'closed-catalogs-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
                     or not 0 < observation_timeout_seconds <= 60):
                 raise OnboardingError('receiving_host_deadline_required')
@@ -1837,7 +1860,7 @@ while True:
         runtime_code, runtime_args, mounts = (self._runtime_paths(plan, guest_code) if candidate is None
             else self._runtime_paths(plan, guest_code, candidate=candidate))
         if candidate is not None:
-            if (action not in {'sdk-observe', 'sdk-prepare', 'observe', 'running', 'admitted-running',
+            if (action not in {'sdk-observe', 'sdk-prepare', 'closed-catalogs-prepare', 'observe', 'running', 'admitted-running',
                     'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'receiving-bootstrap-freeze',
                     'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication', 'group-resource', 'group-session',
                     'admission-prepare', 'admission-check', 'admission-enroll'}

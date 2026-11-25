@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from clusterctl.onboarding import OnboardingError
-from clusterctl.onboarding_conversation_proxy import configuration, desired, reconcile
+from clusterctl.onboarding_conversation_proxy import configuration, desired, reconcile, reconcile_listener
 from tests.test_onboarding import plan
 
 
@@ -93,7 +93,7 @@ def test_duplicate_listener_and_boolean_port_refused():
         configuration({name:dict(listen_host='10.0.0.1',listen_port=18741) for name in ['eko', 'other']})
 
 
-def vm_fixture():
+def vm_fixture(device_name='conversation-web'):
     backend, value, state, calls, _ = fixture()
     listener = dict(listen_host='10.20.30.40', listen_port=18741,
         vm=dict(nic='eth0', network='incusbr0', address='10.100.0.10'))
@@ -112,9 +112,9 @@ def vm_fixture():
             return json.dumps(live)
         if argv[0] == 'query':
             return json.dumps(state)
-        assert argv[:5] == ['config','device','add','dm-eko','conversation-web']
-        state['devices']['conversation-web']=copy.deepcopy(device)
-        state['expanded_devices']['conversation-web']=copy.deepcopy(device)
+        assert argv[:5] == ['config','device','add','dm-eko',device_name]
+        state['devices'][device_name]=copy.deepcopy(device)
+        state['expanded_devices'][device_name]=copy.deepcopy(device)
         return ''
     def execute(plan, argv, **kwargs):
         assert plan==value and argv==['/usr/sbin/ip','-j','-4','route','show','default']
@@ -173,3 +173,33 @@ def test_vm_nat_configuration_never_selects_loopback_public_or_wildcard_target(a
     backend.config.conversation_proxy_by_name['eko']['vm']['address']=address
     with pytest.raises(OnboardingError,match='conversation_proxy_configuration_required'):
         configuration(backend.config.conversation_proxy_by_name)
+
+
+def test_message_ingress_recovers_lost_add_without_touching_web_or_admin_routes():
+    backend,value,state,calls,device,request,*_=vm_fixture('matrix-message')
+    listener=backend.config.conversation_proxy_by_name['eko']
+    web=dict(device,listen='tcp:10.20.30.40:18740',connect='tcp:10.100.0.10:8799')
+    state['devices']['conversation-web']=copy.deepcopy(web)
+    state['expanded_devices']['conversation-web']=copy.deepcopy(web)
+    original=backend._dispatch
+    def lost(plan,argv):
+        result=original(plan,argv)
+        if argv[0]=='config':
+            raise TimeoutError('lost message ingress add reply')
+        return result
+    backend._dispatch=lost
+    with pytest.raises(TimeoutError):
+        reconcile_listener(backend,value,listener,request,device_name='matrix-message',apply=True)
+    assert reconcile_listener(backend,value,listener,request,
+        device_name='matrix-message',apply=True).state=='complete'
+    assert state['devices']['conversation-web']==web
+    assert state['devices']['matrix-message']==device
+    assert sum(c[0]=='config' for c in calls)==1
+    state['devices']['matrix-message']['connect']='tcp:10.100.0.10:9999'
+    with pytest.raises(OnboardingError,match='existing_conversation_proxy_preserved'):
+        reconcile_listener(backend,value,listener,request,device_name='matrix-message',apply=True)
+    assert state['devices']['conversation-web']==web
+    calls.clear()
+    with pytest.raises(OnboardingError,match='configuration_required'):
+        reconcile_listener(backend,value,listener,request,device_name='ssh',apply=True)
+    assert calls==[]

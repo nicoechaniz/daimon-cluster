@@ -1281,10 +1281,10 @@ def test_pending_initial_publication_preserves_a_later_native_client_renewal(gro
     assert being_seed._read(path)['result'] is None
 
 
-@pytest.mark.parametrize('portable', [False, True])
-def test_native_additive_publication_recovers_its_sdk_predecessor_without_another_client(group_source, tmp_path, monkeypatch, portable):
+@pytest.mark.parametrize('destinations', ['telegram', 'conversation', 'mixed'])
+def test_native_additive_publication_recovers_its_sdk_predecessor_without_another_client(group_source, tmp_path, monkeypatch, destinations):
     from daimon_matrix import native_egress
-    if portable and not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
+    if destinations != 'telegram' and not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
         pytest.skip('Portable disclosure requires the explicitly selected successor SDK')
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import read_publication
@@ -1316,24 +1316,31 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
         method='relationship.event.ingest', params=dict(event=acceptance)),
         offline=True, authority_closure=approved)['status'] == 'recorded'
     from clusterctl.onboarding_group_admission import load_owner_runtime, public_authorities
-    destination = dict(bot_id=1, chat_id=-123, topic_id=None, representation='compact-text/v1')
-    if portable:
-        from daimon_matrix.canonical import b64url
-        destination = dict(publication=dict(kind='conversation-journal/v1',
-            surface_ref='https://fixture.invalid/conversation', audience=['human:fixture'],
-            receipt_key=b64url(b'p'*32)), representation='compact-text/v1')
+    from daimon_matrix.canonical import b64url
+    telegram = dict(bot_id=1, chat_id=-123, topic_id=None, representation='compact-text/v1')
+    conversation = dict(publication=dict(kind='conversation-journal/v1',
+        surface_ref='https://fixture.invalid/conversation', audience=['human:fixture'],
+        receipt_key=b64url(b'p'*32)), representation='compact-text/v1')
+    destination = conversation if destinations == 'conversation' else telegram
+    if destinations == 'mixed':
+        second_destination = conversation
+    elif destinations == 'conversation':
+        second_destination = {**conversation, 'publication': {
+            **conversation['publication'], 'surface_ref': 'https://second.invalid/conversation',
+        }}
+    else:
+        second_destination = {**telegram, 'topic_id': 7}
     issued = time.time_ns() // 1_000_000
     original_publication = (group/'application/publication.json').read_bytes()
-    prepared_disclosure = owner.group_publication(dict(operation_id=identifier,
-        step='prospective-disclosure', action='visibility-disclosure', params=dict(
-            approved_destination=destination, issued_at_ms=issued, prospective=True)),
-        authority_closure=approved)['disclosure']
-    second_destination = copy.deepcopy(destination)
-    if portable:
-        second_destination['publication']['surface_ref'] = 'https://second.invalid/conversation'
-    else:
-        second_destination['topic_id'] = 7
-    second_disclosure = {**prepared_disclosure, 'destination': second_destination}
+
+    def disclose(step, selected):
+        return owner.group_publication(dict(operation_id=identifier,
+            step=step, action='visibility-disclosure', params=dict(
+                approved_destination=selected, issued_at_ms=issued, prospective=True)),
+            authority_closure=approved)['disclosure']
+
+    prepared_disclosure = disclose('prospective-disclosure', destination)
+    second_disclosure = disclose('prospective-second-disclosure', second_destination)
     prepared_bindings = owner.group_publication(dict(operation_id=identifier,
         step='prospective-binding', action='visibility-accept', params=dict(
             approved_destination=None, approved_destinations=[destination, second_destination],
@@ -1341,6 +1348,20 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
         authority_closure=approved)['bindings']
     assert len(prepared_bindings) == 2
     prepared_binding = prepared_bindings[0]['binding']
+    if destinations == 'mixed':
+        assert prepared_disclosure['scope_sha256'] == second_disclosure['scope_sha256']
+        assert prepared_disclosure['schema'] == 'dm.messaging.visibility-disclosure/v1'
+        assert second_disclosure['schema'] == 'dm.messaging.visibility-disclosure/v2'
+        assert prepared_disclosure['risk'] != second_disclosure['risk']
+        assert prepared_bindings[0]['disclosure_sha256'] == digest(prepared_disclosure)
+        assert prepared_bindings[1]['disclosure_sha256'] == digest(second_disclosure)
+        assert prepared_binding != prepared_bindings[1]['binding']
+        with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):
+            owner.group_publication(dict(operation_id=identifier,
+                step='swapped-mixed-binding', action='visibility-accept', params=dict(
+                    approved_destination=None, approved_destinations=[second_destination, destination],
+                    disclosures=[prepared_disclosure, second_disclosure], prospective=True)),
+                authority_closure=approved)
     altered = copy.deepcopy(prepared_disclosure)
     altered['scope']['channels'][0]['participants'] = []
     with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):
@@ -1408,6 +1429,9 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
         ready = load_owner_runtime(owner.root, owner._reader, authorities=public_authorities(founder.document_bundle(), approved))
         assert operator_messaging.accept_group_visibility(ready, group/'application', disclosure,
             approved_destination=destination) == prepared_binding
+        if destinations == 'mixed':
+            assert operator_messaging.accept_group_visibility(ready, group/'application', second_disclosure,
+                approved_destination=second_destination) == prepared_bindings[1]['binding']
 
 
 def test_prepared_visibility_refuses_unadmitted_application_pins(group_source):

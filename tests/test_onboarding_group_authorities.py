@@ -397,19 +397,26 @@ def test_signed_history_selector_loads_historical_proof_without_pair_or_foreign_
     assert set(source.root.glob('peer-*.sqlite')) == old_peer_files
 
 
-def test_group_peer_update_recovers_selector_and_keeps_membership_history(group_source, monkeypatch):
+@pytest.mark.parametrize('native_publication', [False, True])
+def test_group_peer_update_recovers_selector_and_keeps_membership_history(
+        group_source, monkeypatch, native_publication):
+    from inspect import signature
     from clusterctl.onboarding import OnboardingError
-    from clusterctl.onboarding_peer import republish_group_selection, retain_membership_authorities
+    from clusterctl.onboarding_peer import (
+        republish_group_peer, republish_group_selection, retain_membership_authorities,
+    )
     from daimon_matrix.canonical import canonical_bytes
     from daimon_matrix.keystore import EncryptedKeystore
     from daimon_matrix.messaging_config import config_digest, read_publication
-    from daimon_matrix.operator_messaging import _publication, _write
+    from daimon_matrix.operator_messaging import _publication, _write, republish
     from daimon_matrix.operator_rebirth import (
         AUTHORITY_SCHEMA, apply_activation_to_runtime_bundle, authorize_enrollment_request,
         create_enrollment_request,
     )
     from daimon_matrix.weave import verify_event
 
+    if native_publication and 'group_peer_successor' not in signature(republish).parameters:
+        pytest.skip('Group peer publication requires the qualified Matrix successor SDK')
     source, target, peer, peer_bundle, old_event = group_source
     selected, base, document, sign = history_selection(source, peer_bundle)
     being_seed._write(selected, dict(document=document, binding=sign(base, document)))
@@ -440,23 +447,27 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(group_
     public = dict(schema=AUTHORITY_SCHEMA, **{k: successor[k] for k in public_fields})
     # The Matrix writer has its own regression. Model its completed publication
     # with the same signed metadata, so this test also runs against the pinned SDK.
-    app = selected.parent / 'application'
-    prior_app, metadata = read_publication(base, app)
-    new_app = copy.deepcopy(prior_app)
-    new_app['authorities'] = [public if row['manifest']['being_ref'] == ref else row
-                              for row in prior_app['authorities']]
-    generation = app / ('generation-' + uuid.uuid4().hex)
-    generation.mkdir(mode=0o700)
-    _write(generation, 'application.json', canonical_bytes(new_app))
-    _write(generation, 'binding.json', canonical_bytes(sign(base, new_app)))
-    _write(generation, 'client.json', (metadata / 'client.json').read_bytes())
-    (app / 'publication.json').write_bytes(
-        _publication(base, new_app, generation.name, config_digest(prior_app)))
-    arguments = dict(operation_id=str(uuid.uuid4()), expected_selection_sha256=digest(predecessor),
-        peer_history=(ref, successor['authority_history']))
+    if not native_publication:
+        app = selected.parent / 'application'
+        prior_app, metadata = read_publication(base, app)
+        new_app = copy.deepcopy(prior_app)
+        new_app['authorities'] = [public if row['manifest']['being_ref'] == ref else row
+                                  for row in prior_app['authorities']]
+        generation = app / ('generation-' + uuid.uuid4().hex)
+        generation.mkdir(mode=0o700)
+        _write(generation, 'application.json', canonical_bytes(new_app))
+        _write(generation, 'binding.json', canonical_bytes(sign(base, new_app)))
+        _write(generation, 'client.json', (metadata / 'client.json').read_bytes())
+        (app / 'publication.json').write_bytes(
+            _publication(base, new_app, generation.name, config_digest(prior_app)))
+    arguments = dict(operation_id=str(uuid.uuid4()), expected_selection_sha256=digest(predecessor))
+    def update(history):
+        if native_publication:
+            return republish_group_peer(source.root, selected.parent, source._reader,
+                authority=public, history=history, **arguments)
+        return republish_group_selection(base, selected.parent, peer_history=(ref, history), **arguments)
     with pytest.raises(OnboardingError, match='approved_onboarding_group_history_conflict'):
-        republish_group_selection(base, selected.parent,
-            **{**arguments, 'peer_history': (ref, successor['authority_history'][1:])})
+        update(successor['authority_history'][1:])
     assert being_seed._read(selected) == predecessor
 
     original = being_seed._write
@@ -466,10 +477,10 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(group_
             raise OSError('lost group selection reply')
     monkeypatch.setattr(being_seed, '_write', lost_reply)
     with pytest.raises(OSError, match='lost group selection reply'):
-        republish_group_selection(base, selected.parent, **arguments)
+        update(successor['authority_history'])
     after = selected.read_bytes()
     monkeypatch.setattr(being_seed, '_write', original)
-    assert republish_group_selection(base, selected.parent, **arguments)['status'] == 'selected'
+    assert update(successor['authority_history'])['status'] == 'selected'
     assert selected.read_bytes() == after and membership.read_bytes() == retained_membership
     history = source._load(signed=False).service.relationships.store.authority_resolver(ref)
     assert history.active.manifest.value == successor['manifest']

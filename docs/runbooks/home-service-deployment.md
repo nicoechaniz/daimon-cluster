@@ -5,6 +5,21 @@ publisher. It is **not installed or enabled by merging it**. Homes owns receivin
 selection, capabilities, transport, gateway configuration and actual acceptance.
 No Matrix SDK, identity, native harness, existing goal or login change is needed.
 
+## Signed-out service entry
+
+Browser document navigation returns through the existing shared SSO, preserving
+the permitted local path and query. Some phones/WebViews omit fetch metadata:
+an unauthenticated forwarded GET to the exact registered service root also enters
+SSO when `Sec-Fetch-Dest` is absent. This fallback derives the root from the
+operator capability; absolute or foreign-host forwarded URIs do not qualify.
+Explicit JSON requests, WebSocket upgrades and ordinary API/subpath requests
+remain401. Signed-in access still requires the current service/resource audience.
+Source tests are not evidence of receiving adoption or a working human phone.
+The anonymous Apps page also offers the existing shared-login entrance, returning
+to `/apps/` after sign-in. It does not reveal private card metadata or add another
+login system; signed-in visitors and the dedicated-VPN presentation keep their
+ordinary page behavior.
+
 ## Owner command
 
 Native applications can inspect a current actor's access through the existing

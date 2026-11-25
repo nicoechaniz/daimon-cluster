@@ -11,7 +11,7 @@ import html
 from pathlib import Path
 import re
 import threading
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from .applications import application, paired_receiver
 
 ASSETS = Path(__file__).parent / 'launcher'
@@ -147,6 +147,10 @@ def catalog(app, home, subject, vpn, *, local_only=False):
 def page(app, home, subject, vpn):
     from .styles import appearance_css
     source = (ASSETS / 'index.html').read_text()
+    if subject is None and not vpn and getattr(app, 'sso', None):
+        destination = app.homes[home]['public_url'].rstrip('/') + '/access/sso/start?' + urlencode({'return': '/apps/'})
+        access = '<p class="notice"><a data-apps-sign-in href="' + html.escape(destination, quote=True) + '">Entrar para ver tus aplicaciones compartidas</a></p>'
+        source = source.replace('<main>', '<main>' + access, 1)
     routes=json.dumps(getattr(app,'miniapp_routes',validate_launch_routes(None))).replace('&','\\u0026').replace('<','\\u003c').replace('>','\\u003e')
     source=source.replace('</body>','<script id="miniapp-routes" type="application/json">'+routes+'</script></body>')
     value = app.styles.resolved(home, 'apps', subject) if app.styles else {}

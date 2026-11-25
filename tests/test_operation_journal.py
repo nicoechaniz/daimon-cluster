@@ -11,7 +11,7 @@ from clusterctl import audit, idempotency, lifecycle
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run
 from clusterctl.inventory import load_spec_raw
-from clusterctl.operation_journal import JournalConflict, OperationJournal
+from clusterctl.operation_journal import JournalCapacity, JournalConflict, OperationJournal
 from clusterd import handlers
 from clusterd.handlers import _operation_journal_state
 
@@ -908,3 +908,27 @@ def test_durable_heads_follow_insertions_with_equal_or_regressing_clocks(tmp_pat
     completed = journal.advance(second["operation_id"], "completed", result={"resource": "same"})
     assert journal.latest_completed_for_result("fixture", "resource", "same") == completed
     assert journal.get(first["operation_id"])["created_ms"] == first["created_ms"]
+
+def test_bounded_plan_is_service_scoped_and_preserves_exact_pending_retry(tmp_path):
+    journal = OperationJournal(tmp_path)
+
+    def plan(target, request):
+        return journal.plan(
+            operation="deploy", target=target, idempotency_key=f"{target}:{request}",
+            intent={"runtime_call": {"request": request}}, expected_precondition={},
+            intended_transition={}, audit_identity={}, target_limit=2, journal_limit=3,
+        )
+
+    first = plan("service-a", "first")
+    journal.advance(first["operation_id"], "completed")
+    second = plan("service-a", "second")
+    assert plan("service-a", "second")["operation_id"] == second["operation_id"]
+    journal.advance(second["operation_id"], "completed")
+
+    with pytest.raises(JournalCapacity, match="target operation capacity"):
+        plan("service-a", "third")
+    assert plan("service-b", "first")["state"] == "planned"
+    with pytest.raises(JournalCapacity, match="total operation capacity"):
+        plan("service-c", "first")
+    assert journal.get(first["operation_id"])["state"] == "completed"
+    assert journal.validate() == 3

@@ -53,6 +53,10 @@ class JournalConflict(JournalError):
     pass
 
 
+class JournalCapacity(JournalError):
+    """The selected journal cannot admit another operation."""
+
+
 def now_ms() -> int:
     return time.time_ns() // 1_000_000
 
@@ -267,6 +271,8 @@ class OperationJournal:
         audit_identity: dict[str, Any],
         operation_id: str | None = None,
         allow_terminal_successor: bool = False,
+        target_limit: int | None = None,
+        journal_limit: int | None = None,
     ) -> dict[str, Any]:
         closed_intent = {"schema": INTENT_SCHEMA, **copy.deepcopy(intent)}
         digest = intent_hash(closed_intent)
@@ -324,6 +330,15 @@ class OperationJournal:
                 if len(exact) == 1 and open_rows[0]["state"] != "degraded":
                     connection.commit()
                     return self._decode(exact[0])
+            if target_limit is not None and connection.execute(
+                "SELECT count(*) FROM operations WHERE target=?", (target,)
+            ).fetchone()[0] >= target_limit:
+                raise JournalCapacity("target operation capacity reached")
+            if journal_limit is not None and connection.execute(
+                "SELECT count(*) FROM operations"
+            ).fetchone()[0] >= journal_limit:
+                raise JournalCapacity("total operation capacity reached")
+            if open_rows:
                 raise JournalConflict(
                     "target has a pending, contradictory or degraded operation"
                 )

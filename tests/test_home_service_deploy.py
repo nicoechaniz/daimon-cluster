@@ -204,8 +204,8 @@ def test_typed_request_failures_are_closed(setup, field):
 class ManagerFixture(Runtime):
     """Simulates ONLY systemd; real package writes, CAS and recovery run unchanged."""
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, **options):
+        super().__init__(config, **options)
         self.restarts, self.loaded, self.fail_after_restart = 0, False, False
 
     def preflight(self):
@@ -269,6 +269,40 @@ def test_receiving_apply_recovery_and_compatible_rollback(setup):
     assert "NoNewPrivileges=true" in worker.unit_path.read_text()
     assert "ReadWritePaths=" + c["data"] in worker.unit_path.read_text()
 
+
+
+def test_selected_receiver_capacity_preserves_and_extends_receipts(setup):
+    c, _, _, raw, _, _, value = setup
+    old = ManagerFixture(c)
+    assert old.run(envelope(c, value, raw))["state"] == "ready"
+    original = old.root / ("operation-" + value["request_id"] + ".json")
+    receipt = original.read_bytes()
+    for number in range(127):
+        (old.root / f"operation-historical-{number}.json").write_bytes(receipt)
+    next_value = dict(value, request_id="successor", previous=sha(raw))
+    with pytest.raises(ValueError, match="service_receipt_capacity"):
+        old.run(envelope(c, next_value, raw))
+    assert old.run(envelope(c, value, raw))["state"] == "ready"
+    new = ManagerFixture(c, receipt_limit=256)
+    assert new.run(envelope(c, next_value, raw))["state"] == "ready"
+    assert original.read_bytes() == receipt
+    for number in range(127, 254):
+        (old.root / f"operation-historical-{number}.json").write_bytes(receipt)
+    assert len(list(old.root.glob("operation-*.json"))) == 256
+    with pytest.raises(ValueError, match="service_receipt_capacity"):
+        new.run(envelope(c, dict(next_value, request_id="too-many"), raw))
+    assert new.run(envelope(c, next_value, raw))["state"] == "ready"
+    assert new.restarts == 1
+
+
+def test_gateway_receipt_override_selects_an_existing_target_without_rekeying(setup):
+    _, _, conf, _, _, _, _ = setup
+    target = key(conf['grants'][0]['receiver'])
+    selected = dict(conf, receipt_limits={target: 256})
+    assert configuration(selected)['grants'] == configuration(conf)['grants']
+    for invalid in ({'other': 256}, {target: 257}, {target: True}):
+        with pytest.raises(ValueError, match='invalid_service_receipt_limits'):
+            configuration(dict(conf, receipt_limits=invalid))
 
 def test_wrong_owner_predecessor_or_current_unit_never_restarts(setup):
     c, _, _, raw, _, _, value = setup
@@ -782,3 +816,33 @@ def test_added_guard_compatibility_does_not_accept_any_other_grant_change(setup)
     changed = deepcopy(expanded)
     changed['routes']['maintenance'].append(guard_fixture('second-added'))
     assert not grant_matches_recorded(recorded, changed)
+
+
+def test_one_services_receipts_do_not_consume_anothers_deployment_capacity(setup, tmp_path, monkeypatch):
+    _, _, conf, raw, _, artifact, value = setup
+    app, _ = app_fixture(tmp_path, conf, raw, artifact)
+    deployments = app.service_deployments
+    monkeypatch.setattr("clusterctl.homes.service_deploy.OPERATIONS_PER_SERVICE", 1)
+    other = deployments.journal.plan(
+        operation="home-service-deploy/v1", target="other-service", idempotency_key="other:release",
+        intent={}, expected_precondition={}, intended_transition={}, audit_identity={},
+    )
+    deployments.journal.advance(other["operation_id"], "completed")
+    calls = []
+
+    def execute(_grant, selected, package=None):
+        calls.append((selected["request_id"], package is not None))
+        return {"state": "uncertain", "digest": selected["package"]["sha256"]}
+
+    monkeypatch.setattr(deployments, "execute", execute)
+    assert app.owner("one", "own-test-token", "service-deploy", value)["state"] == "uncertain"
+    assert app.owner("one", "own-test-token", "service-deploy", value)["state"] == "uncertain"
+    with pytest.raises(ValueError, match="service_operation_capacity"):
+        app.owner("one", "own-test-token", "service-deploy", dict(value, request_id="next-release"))
+    selected = deployments.journal.latest_for_idempotency_key(
+        key(conf["grants"][0]["receiver"]) + ":" + value["request_id"]
+    )
+    deployments.journal.advance(selected["operation_id"], "completed", result={"state": "complete"})
+    assert app.owner("one", "own-test-token", "service-deploy", value)["retained"] is True
+    assert calls == [(value["request_id"], True), (value["request_id"], False)]
+    assert deployments.journal.get(other["operation_id"])["state"] == "completed"

@@ -315,10 +315,11 @@ def _owner_file(path: Path) -> Path:
 
 
 def _configured_admission_client(
-    state: Path, identity: Mapping[str, Any]
+    state: Path, identity: Mapping[str, Any], *, config_path: Path | None = None
 ) -> AdmissionClient:
     try:
-        config = _read_json(_owner_file(state / "admission-client.json"))
+        path = config_path if config_path is not None else state / "admission-client.json"
+        config = _read_json(_owner_file(path))
     except RebirthHostError:
         raise
     except RebirthInstallError as exception:
@@ -404,6 +405,7 @@ def launch_rebirth_host(
     timeout_s: float = 30.0,
     production_fence_verifier: bool = False,
     admission_client: AdmissionClient | None = None,
+    admission_client_config: Path | None = None,
     admission_lease_ttl_s: int = DEFAULT_LEASE_TTL_S,
     visibility_installation: Path | None = None,
     native_source_profile: Path | None = None,
@@ -416,6 +418,7 @@ def launch_rebirth_host(
         or timeout_s <= 0
         or timeout_s > 300
         or (recover_native_start is not None and native_source_profile is None)
+        or (admission_client is not None and admission_client_config is not None)
         or isinstance(admission_lease_ttl_s, bool)
         or not 3 <= admission_lease_ttl_s <= 300
     ):
@@ -466,7 +469,9 @@ def launch_rebirth_host(
             os.close(password_descriptor)
             raise RebirthHostError("rebirth_host_recovery_restore_missing")
     try:
-        client = admission_client or _configured_admission_client(state, identity)
+        client = admission_client or _configured_admission_client(
+            state, identity, config_path=admission_client_config
+        )
         if admission_client is None:
             admission_lease_ttl_s = client.lease_ttl_s
         if any(
@@ -827,6 +832,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument("--production-fence-verifier", action="store_true")
     parser.add_argument("--native-source-profile", type=Path)
+    parser.add_argument("--admission-client-config", type=Path)
+    parser.add_argument("--visibility-installation", type=Path)
     parser.add_argument("--recover-native-start")
     args = parser.parse_args(argv)
     try:
@@ -836,6 +843,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.password_fd,
             production_fence_verifier=args.production_fence_verifier,
             native_source_profile=args.native_source_profile,
+            admission_client_config=args.admission_client_config,
+            visibility_installation=args.visibility_installation,
             recover_native_start=args.recover_native_start,
         )
         if args.ready_fd is not None:

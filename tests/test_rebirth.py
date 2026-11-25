@@ -704,11 +704,19 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
     while client.position()["current"] is True and time.monotonic() < deadline:
         time.sleep(0.01)
     assert client.position()["current"] is False
+    defaults = state / "admission-client.json"
+    selected = state / "body-admission-client.json"
+    with open(selected, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
+        out.write(defaults.read_bytes())
+    # A different body's default must not supply credentials to this launch.
+    defaults.write_bytes(b"{}")
     restarted, replay = rebirth_host.launch_rebirth_host(
         state,
         installed["embodiment_id"],
         _descriptor(fixture["password"]),
+        admission_client_config=selected,
     )
+    assert defaults.read_bytes() == b"{}"
     try:
         assert {key: value for key, value in replay.items() if key != "admission"} == {
             key: value for key, value in ready.items() if key != "admission"

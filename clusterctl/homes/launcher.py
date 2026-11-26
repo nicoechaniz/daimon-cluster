@@ -5,6 +5,7 @@ workflow become shared navigation. Only this home may contribute private links
 through its current authorized reader. No launch is a permission grant.
 """
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 import json
 import hashlib
 import html
@@ -98,8 +99,18 @@ def catalog(app, home, subject, vpn, *, local_only=False):
         except (ValueError, OSError, TimeoutError, json.JSONDecodeError):
             return ref, [], False
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(read, selected))
+    if local_only:
+        results = [read(home)]
+    else:
+        snapshot = getattr(app.authority, 'read_snapshot', nullcontext)
+
+        def read_in_snapshot(ref):
+            # A worker does not inherit the handler's context-local proof reads.
+            with snapshot():
+                return read(ref)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(read_in_snapshot, selected))
     apps, seen, unavailable = [], set(), 0 if local_only else len(homes) - len(selected)
     owner_url = owner_app_url(app)
     receivers = getattr(app, 'miniapp_receivers', {})

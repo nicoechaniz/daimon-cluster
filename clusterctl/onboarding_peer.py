@@ -281,7 +281,7 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
     private_directory(group_root)
     with being_seed._locked(group_root):
         path = group_root / 'selection.json'
-        before = being_seed._read(path)
+        before = being_seed._read(path, limit=being_seed.MAX_SELECTION)
         operations = group_root / 'selection-operations'
         operation = operations / (operation_id + '.json')
         command = dict(operation_id=operation_id,
@@ -328,10 +328,10 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        if being_seed._read(path) not in (predecessor, candidate):
+        if being_seed._read(path, limit=being_seed.MAX_SELECTION) not in (predecessor, candidate):
             raise OnboardingError('onboarding_group_selection_changed')
         if before != candidate:
-            being_seed._write(path, candidate)
+            being_seed._write(path, candidate, limit=being_seed.MAX_SELECTION)
         else:
             descriptor = os.open(group_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:

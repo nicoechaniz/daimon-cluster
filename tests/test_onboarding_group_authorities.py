@@ -510,10 +510,27 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
             _publication(base, new_app, generation.name, config_digest(prior_app)))
     arguments = dict(operation_id=str(uuid.uuid4()), expected_selection_sha256=digest(predecessor))
     def update(history):
-        if native_publication:
-            return republish_group_peer(source.root, selected.parent, source._reader,
-                authority=public, history=history, **arguments)
-        return republish_group_selection(base, selected.parent, peer_history=(ref, history), **arguments)
+        read, write = being_seed._read, being_seed._write
+
+        def read_selection(path, *, limit=being_seed.MAX_RECORD):
+            if path == selected:
+                assert limit == being_seed.MAX_SELECTION
+            return read(path, limit=limit)
+
+        def write_selection(path, value, *, limit=being_seed.MAX_RECORD):
+            if path == selected:
+                assert limit == being_seed.MAX_SELECTION
+            return write(path, value, limit=limit)
+
+        with monkeypatch.context() as selected_limits:
+            # The signed production group selection can exceed the small
+            # generic record bound. All selection reads and writes use its own.
+            selected_limits.setattr(being_seed, '_read', read_selection)
+            selected_limits.setattr(being_seed, '_write', write_selection)
+            if native_publication:
+                return republish_group_peer(source.root, selected.parent, source._reader,
+                    authority=public, history=history, **arguments)
+            return republish_group_selection(base, selected.parent, peer_history=(ref, history), **arguments)
     with pytest.raises(OnboardingError, match='approved_onboarding_group_history_conflict'):
         update(successor['authority_history'][1:])
     assert being_seed._read(selected) == predecessor

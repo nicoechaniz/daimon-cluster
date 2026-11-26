@@ -551,6 +551,32 @@ def test_native_start_can_select_sdk_and_verified_authority_together(tmp_path):
         embodiment_id='body', authority_predecessors=known) == current
 
 
+def test_standalone_start_only_accepts_a_verified_authority_successor(tmp_path):
+    from clusterctl.operation_journal import OperationJournal
+
+    journal = OperationJournal(tmp_path / 'state')
+    before = _startup_intent()
+    before['runtime_call'] = {'operation': 'matrix-host', 'matrix_contract_commit': 'fixture'}
+    original = rebirth_native.start_record(journal, 'target', before, actor='fixture', embodiment_id='body')
+    after = {**before, 'successor_manifest_hash': 'verified-successor'}
+    known = frozenset({before['successor_manifest_hash']})
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        rebirth_native.start_record(journal, 'target', after, actor='fixture', embodiment_id='body',
+                                    authority_predecessors=known)
+    journal.advance(original['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    for changed, trusted in [(after, frozenset()), (
+            {**after, 'runtime_call': {**before['runtime_call'], 'matrix_contract_commit': 'other'}}, known)]:
+        with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+            rebirth_native.start_record(journal, 'target', changed, actor='fixture', embodiment_id='body',
+                                        authority_predecessors=trusted)
+    current = rebirth_native.start_record(journal, 'target', after, actor='fixture', embodiment_id='body',
+                                         authority_predecessors=known)
+    assert current['intent']['native_start_predecessor']['operation_id'] == original['operation_id']
+    assert rebirth_native.start_record(journal, 'target', after, actor='fixture', embodiment_id='body',
+                                       authority_predecessors=known) == current
+    assert journal.get(original['operation_id'])['state'] == 'completed'
+
+
 def test_native_profile_selection_is_canonical_idempotent_and_preserves_binding(tmp_path):
     from clusterctl.rebirth import _read_json
     previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/source.json',

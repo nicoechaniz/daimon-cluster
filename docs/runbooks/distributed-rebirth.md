@@ -193,6 +193,11 @@ clusterctl --state-dir PEER_STATE rebirth-peer-ack \
   --embodiment-id PEER_EMBODIMENT --json >ACK-PEER.json
 ```
 
+For an existing standalone H8 predecessor, the supervisor keeps its original
+completed startup record and plans a linked record for the verified descendant.
+The activation, local origin, Matrix contract and launch operation must match.
+An unfinished launch or an unverified authority change remains a conflict.
+
 The acknowledgement must be canonical and contain only rollout, embodiment,
 unchanged incarnation, successor manifest, runtime hash and journal/audit IDs.
 Reapplying a completed peer returns `already-acknowledged`; repeating `ack`

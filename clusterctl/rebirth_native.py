@@ -121,6 +121,8 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
                 previous['operation_id'], None if recovery is None else recovery['operation_id']}:
             raise RebirthHostError('rebirth_host_journal_conflict')
         if prior == intent:
+            if (prior.get('runtime_call') or {}).get('operation') == 'matrix-host' and previous['state'] == 'compensated':
+                raise RebirthHostError('rebirth_host_journal_conflict')
             return previous
         before, after = prior.get('runtime_call'), intent.get('runtime_call')
         recovering = (recover_operation_id == previous['operation_id']
@@ -138,27 +140,34 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
         changed = {'runtime_call'}
         if verified_authority_advance:
             changed.add(manifest_field)
-        if (previous['state'] != 'completed' and not recovering
-                or {k: v for k, v in prior.items() if k not in changed}
-                    != {k: v for k, v in intent.items() if k not in changed}
-                or not isinstance(before, dict) or not isinstance(after, dict)
-                or set(before) != {'operation', 'selection'} or set(after) != set(before)
-                or before['operation'] != 'native-source' or after['operation'] != 'native-source'):
-            raise RebirthHostError('rebirth_host_journal_conflict')
-        old, new = before['selection'], after['selection']
-        fields = {'config', 'config_sha256', 'code', 'code_digest', 'venv', 'sdk_digest'}
-        if (not isinstance(old, dict) or not isinstance(new, dict)
-                or set(old) != fields or set(new) != fields
-                or any(not isinstance(v, str) or not v for v in (*old.values(), *new.values()))
-                or old['config'] != new['config'] or old['config_sha256'] != new['config_sha256']):
-            raise RebirthHostError('rebirth_host_journal_conflict')
-        for selection in (old, new):
-            venv = Path(selection['venv'])
-            if (not venv.is_absolute() or venv.name != 'venv'
-                    or venv.parent.name != selection['sdk_digest']):
+        standalone = (isinstance(before, dict) and before == after
+                      and set(before) == {'operation', 'matrix_contract_commit'}
+                      and before['operation'] == 'matrix-host')
+        standalone_advance = (standalone and verified_authority_advance
+            and {k: v for k, v in prior.items() if k != manifest_field}
+            == {k: v for k, v in intent.items() if k != manifest_field})
+        if not standalone_advance:
+            if (previous['state'] != 'completed' and not recovering
+                    or {k: v for k, v in prior.items() if k not in changed}
+                        != {k: v for k, v in intent.items() if k not in changed}
+                    or not isinstance(before, dict) or not isinstance(after, dict)
+                    or set(before) != {'operation', 'selection'} or set(after) != set(before)
+                    or before['operation'] != 'native-source' or after['operation'] != 'native-source'):
                 raise RebirthHostError('rebirth_host_journal_conflict')
-        if Path(old['venv']).parent.parent != Path(new['venv']).parent.parent:
-            raise RebirthHostError('rebirth_host_journal_conflict')
+            old, new = before['selection'], after['selection']
+            fields = {'config', 'config_sha256', 'code', 'code_digest', 'venv', 'sdk_digest'}
+            if (not isinstance(old, dict) or not isinstance(new, dict)
+                    or set(old) != fields or set(new) != fields
+                    or any(not isinstance(v, str) or not v for v in (*old.values(), *new.values()))
+                    or old['config'] != new['config'] or old['config_sha256'] != new['config_sha256']):
+                raise RebirthHostError('rebirth_host_journal_conflict')
+            for selection in (old, new):
+                venv = Path(selection['venv'])
+                if (not venv.is_absolute() or venv.name != 'venv'
+                        or venv.parent.name != selection['sdk_digest']):
+                    raise RebirthHostError('rebirth_host_journal_conflict')
+            if Path(old['venv']).parent.parent != Path(new['venv']).parent.parent:
+                raise RebirthHostError('rebirth_host_journal_conflict')
         if recovering:
             if previous['state'] == 'runtime-dispatching':
                 journal.advance(previous['operation_id'], 'compensated',

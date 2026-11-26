@@ -47,9 +47,12 @@ def main(argv=None):
     sys.path.insert(0, str(ROOT))
     from clusterctl import matrix_host
     from clusterctl.onboarding_custody import FirstCustody
-    original_pin, original_run = matrix_host.MATRIX_CONTRACT_COMMIT, FirstCustody._run
+    original_pin = matrix_host.MATRIX_CONTRACT_COMMIT
+    original_compatible = matrix_host._MATRIX_CONTRACT_COMPATIBLE_COMMITS
+    original_run = FirstCustody._run
     try:
         matrix_host.MATRIX_CONTRACT_COMMIT = args.sdk_commit
+        matrix_host._MATRIX_CONTRACT_COMPATIBLE_COMMITS = original_compatible | {args.sdk_commit}
         matrix_host._matrix_api()
         def identity(arguments, password):
             result = subprocess.run([str(args.identity_python), '-B', '-I', '-c', IDENTITY_PROGRAM, str(ROOT)],
@@ -63,6 +66,7 @@ def main(argv=None):
             '-W', 'error::ResourceWarning', '-W', 'error::pytest.PytestUnraisableExceptionWarning'])
     finally:
         matrix_host.MATRIX_CONTRACT_COMMIT = original_pin
+        matrix_host._MATRIX_CONTRACT_COMPATIBLE_COMMITS = original_compatible
         FirstCustody._run = staticmethod(original_run)
 
 

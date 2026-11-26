@@ -22,6 +22,20 @@ from . import being_seed, onboarding_input, onboarding_release, onboarding_sdk
 from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan
 
 
+MEMORY_CURATION_GUIDANCE = """### Curate memory with your paired human
+
+During an ongoing conversation with your paired human, notice shared experiences,
+lasting preferences, relationships and lessons worth carrying forward. When that
+human's retention instructions permit it, use the installed DaimonMemoryKit
+workflow to keep the durable meaning with source attribution. Respect corrections
+and requests to leave something out. Keep technical work state in its project.
+An authorized retrospective review stays within your selected own conversation.
+Check for an existing record before adding one and verify that you can retrieve
+what you saved. Report a missing memory tool, failed write or unverified review
+as an operational gap without quoting the private conversation.
+"""
+
+
 def checksum(path: Path) -> str:
     return onboarding_input.owned_digest(path, uid=os.geteuid())[0]
 
@@ -312,6 +326,7 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
                   "Do not prefetch at startup/turn boundaries or add Matrix attention hooks.\n",
                   "Source originals, private histories and provenance remain in the receiving continuity index.\n",
                   "Keep the separate stores and their origins; do not silently merge them.\n"]
+        access.extend(("\n", MEMORY_CURATION_GUIDANCE, "\n"))
         for row in self.memory:
             command = self.state / ("hmk-" + row["name"] + ".py")
             new_bytes(command, self._wrapper(row["name"]))

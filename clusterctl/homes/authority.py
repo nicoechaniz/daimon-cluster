@@ -321,7 +321,7 @@ class NativeAuthority:
                 if current.manifest.digest != authority.manifest.digest:
                     # The SDK has verified the entire signed successor chain.
                     # Only the already-pinned, still-active origin can follow it.
-                    history = getattr(current, "accepted_manifest_hashes", lambda: ())()
+                    history = getattr(current, "accepted_manifest_hashes", ())
                     if authority.manifest.digest not in history:
                         raise ValueError("home_actor_authority_source_stale")
                     try:

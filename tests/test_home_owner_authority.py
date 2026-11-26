@@ -123,7 +123,6 @@ def test_current_successor_keeps_human_session_only_for_the_same_active_origin(t
     origin = {'body_ref': 'existing-home-origin'}
     old = SimpleNamespace(manifest=SimpleNamespace(being_ref='being', digest='old'))
     active = True
-    ancestors = ('old', 'current')
 
     def validate_origin(value, *, require_active):
         assert value == origin and require_active
@@ -131,7 +130,7 @@ def test_current_successor_keeps_human_session_only_for_the_same_active_origin(t
             raise ValueError('origin_not_active')
 
     current = SimpleNamespace(manifest=SimpleNamespace(being_ref='being', digest='current'),
-                              accepted_manifest_hashes=lambda: ancestors,
+                              accepted_manifest_hashes=('old', 'current'),
                               validate_origin=validate_origin)
     monkeypatch.setattr(module, 'public_history', lambda _: current)
     monkeypatch.setattr(a, 'bindings', lambda: [
@@ -149,7 +148,7 @@ def test_current_successor_keeps_human_session_only_for_the_same_active_origin(t
     with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
         a.actors()
     active = True
-    ancestors = ('unrelated', 'current')
+    current.accepted_manifest_hashes = ('unrelated', 'current')
     with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
         a.actors()
 

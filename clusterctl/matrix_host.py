@@ -31,6 +31,13 @@ from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
 MATRIX_CONTRACT_COMMIT = "017e5516992cb500387e933067e38ace255558f6"
+
+# Both releases satisfy the same Cluster wire contract. The second includes
+# the owner-signed native visibility installation for a private sibling pair.
+_MATRIX_CONTRACT_COMPATIBLE_COMMITS = frozenset((
+    MATRIX_CONTRACT_COMMIT,
+    "a356df712c6376138f7f52e6a7d56311b75b5cf6",
+))
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_RECOVERY_SNAPSHOT_SCHEMA = "dm.cluster-matrix-recovery-snapshot/v1"
@@ -166,7 +173,7 @@ def _matrix_api() -> dict[str, Any]:
         TypeError,
     ) as exception:
         raise MatrixHostError("daimon_matrix_commit_unverifiable") from exception
-    if installed_commit != MATRIX_CONTRACT_COMMIT:
+    if installed_commit not in _MATRIX_CONTRACT_COMPATIBLE_COMMITS:
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     expected = {
         "BODY_SNAPSHOT_SCHEMA": "dm.cluster-body-snapshot/v1",

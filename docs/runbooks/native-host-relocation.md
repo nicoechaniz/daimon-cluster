@@ -545,8 +545,15 @@ the receiving operator record rather than this runbook.
 
 ### Retain owner credentials across a current authority update
 
-Before advancing signed authority, qualify Home's selected public proof and
-origin against the successor. On an already accepted successor, recover forward:
+A Home identity pin can follow an exact verified successor of its existing
+manifest while its configured origin remains active. Human session revisions
+stay the same. Existing owner credentials still require acceptance against the
+current owner revision. Unrelated histories and retired origins cannot use this
+continuity path.
+
+When the origin itself changes, qualify the new Home binding against the
+successor before advancing signed authority. On an already accepted successor,
+recover forward:
 validate the prior manifest in the signed history, stage just the new public
 proof, and switch its pointer and current origin in the same protected identity
 binding. Preserve the Home and paired-human references and verify the actual

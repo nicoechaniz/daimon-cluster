@@ -570,6 +570,30 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     known = target.document_bundle()['sources']['known_beings']
     assert [row['manifest'] for row in known] == ([successor['manifest']] if direct_peer else [])
 
+    if native_publication:
+        from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
+
+        # A second update used to reject the still-valid membership proof
+        # because its peer authority was now one epoch behind the publication.
+        enrolled = authority_from_runtime_bundle(successor)
+        second_request = create_enrollment_request(enrolled, signing_seed=os.urandom(32),
+            encryption_private=os.urandom(32), transport_seed=os.urandom(32),
+            body_ref='rust:test:peer', embodiment_id='embodiment:' + str(uuid.uuid4()),
+            incarnation_id='incarnation:' + str(uuid.uuid4()), principal_id='rust@test',
+            created_at_ms=now, expires_at_ms=now + 60_000, nonce=os.urandom(32))
+        second_activation = authorize_enrollment_request(second_request, enrolled,
+            root_seeds=tuple(roots.secrets.values()), issued_at_ms=now)
+        second = apply_activation_to_runtime_bundle(successor, second_activation, enrolled,
+            target_endpoint='http://127.0.0.1:45998/dm-peer/v1')
+        result = republish_group_peer(source.root, selected.parent, source._reader,
+            authority=dict(schema=AUTHORITY_SCHEMA, **{key: second[key] for key in public_fields}),
+            history=second['authority_history'], operation_id=str(uuid.uuid4()),
+            expected_selection_sha256=digest(being_seed._read(selected)))
+        assert result['peer_manifest_revision'] == second['manifest']['revision']
+        assert membership.read_bytes() == retained_membership
+        history = source._load(signed=False).service.relationships.store.authority_resolver(ref)
+        verify_event(old_event, history)
+
 
 def test_invalid_history_selector_is_refused_before_private_custody(group_source, monkeypatch):
     source, target, _peer, peer_bundle, _old_event = group_source

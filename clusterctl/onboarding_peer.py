@@ -665,14 +665,20 @@ def approved_group_authorities(runtime_root: Path, group_root: Path, bundle: dic
     from daimon_matrix.messaging_config import read_application_authorities
     current = read_application_authorities(runtime_root, 'runtime.json',
         Path(selected['directory']), at_ms=time.time_ns() // 1000000)
-    from .onboarding_group_admission import merge_authorities
     group = _group_authorities_with_history(bundle, histories, current)
-    for ref in membership.keys() & group.keys():
-        if _extends_group_authority(membership[ref], group[ref]):
-            # Membership retains its earlier signed verification context. A
-            # selected group publication can advance it along the same chain.
-            del membership[ref]
-    return merge_authorities(membership, group)
+    return _merge_membership_and_group(membership, group)
+
+
+def _merge_membership_and_group(membership: dict, group: dict) -> dict:
+    from .onboarding_group_admission import merge_authorities
+
+    # Keep the membership proof intact. Only its exact signed descendants in
+    # the selected group may supersede its historical verification keys.
+    retained = {
+        ref: authority for ref, authority in membership.items()
+        if not _extends_group_authority(authority, group.get(ref))
+    }
+    return merge_authorities(retained, group)
 
 
 def _extends_group_authority(incumbent, candidate) -> bool:
@@ -702,8 +708,6 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
         adopt_peer_authority, known_peer_successor, public_authority_history, republish,
     )
     from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
-    from .onboarding_group_admission import merge_authorities
-
     if str(uuid.UUID(operation_id)) != operation_id:
         raise OnboardingError('onboarding_group_selection_operation_required')
     successor = public_authority_history(authority, history)
@@ -786,7 +790,7 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
         membership = approved_membership_authorities(root, bundle)
         if direct is not None and bundle_sha256 == native_successor_sha256:
             approved_group[ref] = successor
-        approved = merge_authorities(membership, approved_group)
+        approved = _merge_membership_and_group(membership, approved_group)
         if not operation.exists():
             private_directory(operations, create=True)
             being_seed._write(operation, dict(schema='cluster-group-peer-republication/v1',

@@ -398,6 +398,16 @@ refused. The coordinator checkpoint remains bounded to two2MiB files; native
 owner request journals retain their own ownership and uncertainty. Already matching
 native vectors require no controls; only the observed completion metadata is saved.
 
+When `reader_completion` is configured, native code and profile maintenance compare
+the authenticated owners' signed group views before a new software transition.
+Each being in that audience needs a current owner observation, and previously
+selected bodies still in the audience cannot silently disappear. An unselected
+sibling does not need to be started. Missing owners and authority disagreements
+stop a new transition before it changes services. A retained operation can recover
+its own stopped service, but completion still requires fresh coverage and the
+selected vector from all current owners. Resolve omissions through the existing
+owner routes and authority adoption rather than shrinking the signed audience.
+
 This helper does not discover placements, replace owner adapters, restart services,
 reenroll members or send test speech. Membership/process/selection changes refuse
 rather than repurpose the old operation. `qualified-local-projection` establishes

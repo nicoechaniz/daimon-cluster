@@ -232,9 +232,14 @@ Home/owner/service target key. Both bounds allow up to 512. The override
 is outside the grant and receiver descriptors, so package identity and
 request receipts remain valid. Select the executor first. The gateway
 retains its aggregate 4,096-operation ceiling across 32 grants, with
-admission and counting in one write transaction. Exact retries still read their original records after
-capacity is reached. Retain operation identities and their receipts when
-planning lifecycle retention. Ordinary own Home publication history keeps its existing policy.
+admission and counting in one write transaction. The per-target receiving
+receipt bound at 512 is 1 GiB at the 2 MiB maximum per receipt. Exact retries
+still read their original records after capacity is reached. Restore the
+gateway code and configuration together if withdrawing an override. An older
+valid limit below the retained count still preserves exact lookups and
+blocks new admissions for that target. Retain operation identities and
+their receipts when planning lifecycle retention. Ordinary own Home
+publication history keeps its existing policy.
 
 ## First receiving cases and remaining acceptance
 

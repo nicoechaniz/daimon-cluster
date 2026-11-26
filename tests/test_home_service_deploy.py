@@ -289,13 +289,26 @@ def test_selected_receiver_capacity_preserves_and_extends_receipts(setup):
     for number in range(127, 254):
         (old.root / f"operation-historical-{number}.json").write_bytes(receipt)
     assert len(list(old.root.glob("operation-*.json"))) == 256
+    retry = envelope(c, dict(next_value, request_id="too-many"), raw)
+    before_limit = {path.name: path.read_bytes() for path in old.root.glob("operation-*.json")}
     with pytest.raises(ValueError, match="service_receipt_capacity"):
-        new.run(envelope(c, dict(next_value, request_id="too-many"), raw))
+        new.run(retry)
+    assert {path.name: path.read_bytes() for path in old.root.glob("operation-*.json")} == before_limit
     assert new.run(envelope(c, next_value, raw))["state"] == "ready"
     assert new.restarts == 1
+
     larger = ManagerFixture(c, receipt_limit=512)
-    assert larger.run(envelope(c, dict(next_value, request_id="with-headroom"), raw))["state"] == "ready"
-    assert original.read_bytes() == receipt
+    selected = larger.run(retry)
+    assert selected["state"] == "ready"
+    assert selected["digest"] == sha(raw)
+    assert larger.run(retry) == selected
+    assert larger.restarts == 1
+    after_limit = {path.name: path.read_bytes() for path in old.root.glob("operation-*.json")}
+    assert after_limit.keys() - before_limit.keys() == {"operation-too-many.json"}
+    assert all(after_limit[name] == data for name, data in before_limit.items())
+    assert new.run(retry) == selected
+    with pytest.raises(ValueError, match="service_receipt_capacity"):
+        new.run(envelope(c, dict(next_value, request_id="at-lower-limit"), raw))
 
 
 def test_gateway_receipt_override_selects_an_existing_target_without_rekeying(setup):

@@ -536,11 +536,12 @@ def _group_selection_packet_from_bundle(directory: Path, bundle: dict):
 
 
 def approved_membership_authorities(group_root: Path, bundle: dict) -> dict:
-    """Recover this owner's signed public verification context, without a channel."""
+    """Read retained verification context without reissuing it on Root changes."""
     import time
     from daimon_matrix.canonical import unb64url
-    from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
     from daimon_matrix.messaging_config import _public_identity, verify_public_binding
+    from daimon_matrix.operator_messaging import public_authority_history
+    from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA, authority_from_runtime_bundle
     from .onboarding_group_admission import public_authorities
 
     path = group_root / 'membership-authorities.json'
@@ -551,9 +552,19 @@ def approved_membership_authorities(group_root: Path, bundle: dict) -> dict:
         raise OnboardingError('approved_onboarding_membership_context_required')
     document = packet['document']
     own = authority_from_runtime_bundle(bundle)
-    identity = _public_identity(own, bundle['local_origin'], bundle['runtime_id'],
-        bundle['runtime_label'], time.time_ns() // 1000000)
-    key = unb64url(own.credentials[identity['credential_id']]['body']['signing_key']['public'])
+    coordinates = (bundle['local_origin'], bundle['runtime_id'], bundle['runtime_label'],
+        time.time_ns() // 1000000)
+    identity = _public_identity(own, *coordinates)
+    signer_epoch = own
+    binding_body = packet['binding'].get('body', {})
+    if binding_body.get('manifest_hash') != own.manifest.digest:
+        # This record supplies verification keys. Current native membership
+        # and the selected signed application still govern authorized effects.
+        authority = dict(schema=AUTHORITY_SCHEMA, **{key: bundle[key] for key in (
+            'manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')})
+        signer_epoch = public_authority_history(authority, bundle['authority_history']).select(binding_body)
+        identity = _public_identity(signer_epoch, *coordinates)
+    key = unb64url(signer_epoch.credentials[identity['credential_id']]['body']['signing_key']['public'])
     verify_public_binding(identity, key, document, packet['binding'])
     if (set(document) != {'schema', 'operation_id', 'tribe_ref', 'members', 'authority_closure'}
             or document['schema'] != 'cluster-onboarding-membership-authorities/v1'
@@ -569,7 +580,8 @@ def approved_membership_authorities(group_root: Path, bundle: dict) -> dict:
         raise OnboardingError('approved_onboarding_membership_context_required')
     authorities = public_authorities(bundle, document['authority_closure'])
     return _group_authorities_with_history(bundle, authorities,
-        {ref: authority.active for ref, authority in authorities.items()})
+        {ref: authority.active for ref, authority in authorities.items()},
+        allow_native_successor=True)
 
 
 def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str,
@@ -582,7 +594,7 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
     """
     import uuid
     import re
-    from daimon_matrix.messaging_config import create_binding, verify_binding
+    from daimon_matrix.messaging_config import create_binding
     from .onboarding_group_admission import public_authorities
 
     if (str(uuid.UUID(operation_id)) != operation_id
@@ -601,10 +613,9 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
         before = being_seed._read(path, limit=being_seed.MAX_SELECTION) if path.exists() else None
         if before is not None:
             approved = approved_membership_authorities(group_root, bundle)
-            verify_binding(hosted, before['document'], before['binding'])
             # Verification history is retained even after a member leaves. It
             # verifies old events; current native membership still owns rights.
-            if any(authority_closure.get(ref, row) != row
+            if any(authority_closure.get(ref, row) != row and approved[ref] != authorities[ref]
                     and not _extends_group_authority(approved[ref], authorities[ref])
                     for ref, row in before['document']['authority_closure'].items()):
                 raise OnboardingError('onboarding_group_membership_context_changed')
@@ -789,13 +800,17 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
         os.close(lock)
 
 
-def _group_authorities_with_history(bundle: dict, histories: dict | None, current: dict) -> dict:
+def _group_authorities_with_history(bundle: dict, histories: dict | None, current: dict,
+                                    *, allow_native_successor: bool = False) -> dict:
     if histories is None:
         return current
     from daimon_matrix.operator_messaging import public_authority_history
     from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
     # Known histories stay in their native bundle. Do not silently truncate or
     # replace an already accepted chain with another valid self-consistent one.
+    if any(histories[ref].active != authority for ref, authority in current.items()):
+        raise OnboardingError('approved_onboarding_group_history_conflict')
+    result = {ref: histories[ref] for ref in current}
     known = bundle['sources']['known_beings'] if bundle['sources'] else []
     for row in known:
         ref = row['manifest']['being_ref']
@@ -804,11 +819,11 @@ def _group_authorities_with_history(bundle: dict, histories: dict | None, curren
         native = public_authority_history(dict(schema=AUTHORITY_SCHEMA, **{
             key: row[key] for key in ('manifest', 'control_artifacts', 'control_head',
                                      'credentials', 'incarnations')}), row['authority_history'])
-        if histories[ref] != native:
+        if allow_native_successor and _extends_group_authority(histories[ref], native):
+            result[ref] = native
+        elif histories[ref] != native:
             raise OnboardingError('approved_onboarding_group_history_conflict')
-    if any(histories[ref].active != authority for ref, authority in current.items()):
-        raise OnboardingError('approved_onboarding_group_history_conflict')
-    return {ref: histories[ref] for ref in current}
+    return result
 
 
 def augmented(target, original: dict, bundle: dict) -> tuple[dict, bool]:

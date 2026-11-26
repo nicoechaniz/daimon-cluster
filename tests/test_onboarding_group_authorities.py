@@ -209,6 +209,37 @@ def test_group_selector_republication_rejects_forged_predecessor(group_source):
     assert not (selected.parent / 'selection-operations').exists()
 
 
+def test_retained_membership_context_survives_owner_authority_advance(group_source):
+    from clusterctl.onboarding_peer import approved_membership_authorities, retain_membership_authorities
+    from daimon_matrix.messaging_config import MessagingConfigError
+    from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
+
+    source, target, peer, peer_bundle, _ = group_source
+    selected, base, document, _ = history_selection(source, peer_bundle)
+    group = selected.parent
+    ref = peer.manifest.being_ref
+    authority = dict(schema=AUTHORITY_SCHEMA, **{key: peer_bundle[key] for key in (
+        'manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')})
+    args = dict(operation_id=str(uuid.uuid4()), tribe_ref=document['tribe_ref'],
+        authority_closure={ref: dict(authority=authority, history=peer_bundle['authority_history'])},
+        expected_selection_sha256=None)
+    first = retain_membership_authorities(base, group, **args)
+    path = group / 'membership-authorities.json'
+    original = path.read_bytes()
+
+    updated = advance_group_owner(source, target, peer)
+    bundle = target.document_bundle()
+    assert approved_membership_authorities(group, bundle)[ref].active == peer
+    assert retain_membership_authorities(updated, group, **args) == first
+    assert path.read_bytes() == original
+
+    tampered = being_seed._read(path)
+    tampered['document']['tribe_ref'] += '-changed'
+    being_seed._write(path, tampered)
+    with pytest.raises(MessagingConfigError, match='messaging_binding_rejected'):
+        approved_membership_authorities(group, bundle)
+
+
 def history_selection(source, peer_bundle):
     from daimon_matrix.messaging_config import create_binding
     selected = source.outputs / 'tribe/selection.json'
@@ -403,7 +434,8 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     from inspect import signature
     from clusterctl.onboarding import OnboardingError
     from clusterctl.onboarding_peer import (
-        republish_group_peer, republish_group_selection, retain_membership_authorities,
+        approved_membership_authorities, republish_group_peer, republish_group_selection,
+        retain_membership_authorities,
     )
     from daimon_matrix.canonical import canonical_bytes
     from daimon_matrix.keystore import EncryptedKeystore
@@ -445,6 +477,15 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     successor = apply_activation_to_runtime_bundle(peer_bundle, activation, peer,
         target_endpoint='http://127.0.0.1:45999/dm-peer/v1')
     public = dict(schema=AUTHORITY_SCHEMA, **{k: successor[k] for k in public_fields})
+    # The same retained closure can follow a directly trusted peer's verified
+    # successor without a fresh local signature or any change to membership.
+    direct = target.document_bundle()
+    direct['sources']['known_beings'] = [dict(
+        **{key: successor[key] for key in public_fields}, authority_history=successor['authority_history'])]
+    direct_authority = approved_membership_authorities(selected.parent, direct)[ref]
+    assert direct_authority.active.manifest.value == successor['manifest']
+    verify_event(old_event, direct_authority)
+    assert membership.read_bytes() == retained_membership
     # The Matrix writer has its own regression. Model its completed publication
     # with the same signed metadata, so this test also runs against the pinned SDK.
     if not native_publication:

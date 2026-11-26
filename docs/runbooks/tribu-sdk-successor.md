@@ -530,6 +530,15 @@ predecessor prefix. The older signed membership context remains usable as a
 historical anchor when the selected group chain extends it. This requires no
 bilateral route or replacement membership.
 
+A retained membership verification context keeps its original signature when
+an embodiment joins or retires. The receiver verifies it in its original,
+verified Root epoch for the same current owner. For a directly known peer, the
+receiver uses a native successor only when it extends the retained signed chain.
+The live native membership and selected group application still decide who can
+send and receive. Republish an affected application and visibility installation
+when their active routing or authority binding changes. Do not reissue the
+unchanged membership verification context as part of that rollout.
+
 For a receiver whose trust in the peer comes from the group alone, run the
 existing owner environment's `python -B -m clusterctl.onboarding_peer` with
 `--runtime-root`, `--group-root` and the scope's held `--password-fd`.

@@ -578,3 +578,18 @@ not authorize publishing a child's private speech or changing accounts/services
 on arbitrary peer instruction. Preserve the paired-human privacy boundary and
 actual global/lane pause state. Context installation is distinct from model use;
 prove the complete path with an actual peer reply, not another enrollment check.
+
+### Verify companion memory continuity
+
+The onboarding store and native write probe establish access. Record memory
+continuity separately using the selected conversation, the body's owner-local
+review, durable source-attributed writes or an explicit empty decision, and
+retrieval from the same receiving pool. Report only operational outcomes outside
+that body. Retention and source selection come from the receiving paired human's
+actual policies. Append the current curation guidance to existing mutable owner
+context without replacing the selected SOUL or widening a privacy boundary.
+
+An absent or stale daily review remains visible through the existing
+[Daimon Alerts operations guide](https://github.com/AlterMundi/daimon-alerts/blob/main/docs/operations.md#daily-memory-review-coverage).
+A healthy embedding check or a successful synthetic write leaves this milestone
+unverified until actual conversation work is observed.

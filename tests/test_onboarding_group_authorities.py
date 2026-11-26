@@ -209,6 +209,37 @@ def test_group_selector_republication_rejects_forged_predecessor(group_source):
     assert not (selected.parent / 'selection-operations').exists()
 
 
+def test_retained_membership_context_survives_owner_authority_advance(group_source):
+    from clusterctl.onboarding_peer import approved_membership_authorities, retain_membership_authorities
+    from daimon_matrix.messaging_config import MessagingConfigError
+    from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
+
+    source, target, peer, peer_bundle, _ = group_source
+    selected, base, document, _ = history_selection(source, peer_bundle)
+    group = selected.parent
+    ref = peer.manifest.being_ref
+    authority = dict(schema=AUTHORITY_SCHEMA, **{key: peer_bundle[key] for key in (
+        'manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')})
+    args = dict(operation_id=str(uuid.uuid4()), tribe_ref=document['tribe_ref'],
+        authority_closure={ref: dict(authority=authority, history=peer_bundle['authority_history'])},
+        expected_selection_sha256=None)
+    first = retain_membership_authorities(base, group, **args)
+    path = group / 'membership-authorities.json'
+    original = path.read_bytes()
+
+    updated = advance_group_owner(source, target, peer)
+    bundle = target.document_bundle()
+    assert approved_membership_authorities(group, bundle)[ref].active == peer
+    assert retain_membership_authorities(updated, group, **args) == first
+    assert path.read_bytes() == original
+
+    tampered = being_seed._read(path)
+    tampered['document']['tribe_ref'] += '-changed'
+    being_seed._write(path, tampered)
+    with pytest.raises(MessagingConfigError, match='messaging_binding_rejected'):
+        approved_membership_authorities(group, bundle)
+
+
 def history_selection(source, peer_bundle):
     from daimon_matrix.messaging_config import create_binding
     selected = source.outputs / 'tribe/selection.json'
@@ -397,13 +428,14 @@ def test_signed_history_selector_loads_historical_proof_without_pair_or_foreign_
     assert set(source.root.glob('peer-*.sqlite')) == old_peer_files
 
 
-@pytest.mark.parametrize('native_publication', [False, True])
+@pytest.mark.parametrize(('native_publication', 'direct_peer'), [(False, False), (True, False), (True, True)])
 def test_group_peer_update_recovers_selector_and_keeps_membership_history(
-        group_source, monkeypatch, native_publication):
+        group_source, monkeypatch, native_publication, direct_peer):
     from inspect import signature
     from clusterctl.onboarding import OnboardingError
     from clusterctl.onboarding_peer import (
-        republish_group_peer, republish_group_selection, retain_membership_authorities,
+        approved_membership_authorities, republish_group_peer, republish_group_selection,
+        retain_membership_authorities,
     )
     from daimon_matrix.canonical import canonical_bytes
     from daimon_matrix.keystore import EncryptedKeystore
@@ -428,6 +460,13 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     ref = peer.manifest.being_ref
     public_fields = ('manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')
     before_authority = dict(schema=AUTHORITY_SCHEMA, **{k: peer_bundle[k] for k in public_fields})
+    if direct_peer:
+        bundle = target.document_bundle()
+        bundle['sources']['known_beings'] = [dict(
+            **{key: peer_bundle[key] for key in public_fields},
+            authority_history=peer_bundle['authority_history'], ledger_filename='known-peer.sqlite')]
+        (source.root / 'runtime.json').write_bytes(canonical_bytes(bundle))
+        base = source._load(signed=False)
     retain_membership_authorities(base, selected.parent, operation_id=str(uuid.uuid4()),
         tribe_ref=document['tribe_ref'], authority_closure={
             ref: dict(authority=before_authority, history=peer_bundle['authority_history'])},
@@ -449,6 +488,15 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     successor = apply_activation_to_runtime_bundle(peer_bundle, activation, peer,
         target_endpoint='http://127.0.0.1:45999/dm-peer/v1')
     public = dict(schema=AUTHORITY_SCHEMA, **{k: successor[k] for k in public_fields})
+    # The same retained closure can follow a directly trusted peer's verified
+    # successor without a fresh local signature or any change to membership.
+    direct = target.document_bundle()
+    direct['sources']['known_beings'] = [dict(
+        **{key: successor[key] for key in public_fields}, authority_history=successor['authority_history'])]
+    direct_authority = approved_membership_authorities(selected.parent, direct)[ref]
+    assert direct_authority.active.manifest.value == successor['manifest']
+    verify_event(old_event, direct_authority)
+    assert membership.read_bytes() == retained_membership
     # The Matrix writer has its own regression. Model its completed publication
     # with the same signed metadata, so this test also runs against the pinned SDK.
     if not native_publication:
@@ -466,13 +514,47 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
             _publication(base, new_app, generation.name, config_digest(prior_app)))
     arguments = dict(operation_id=str(uuid.uuid4()), expected_selection_sha256=digest(predecessor))
     def update(history):
-        if native_publication:
-            return republish_group_peer(source.root, selected.parent, source._reader,
-                authority=public, history=history, **arguments)
-        return republish_group_selection(base, selected.parent, peer_history=(ref, history), **arguments)
+        read, write = being_seed._read, being_seed._write
+
+        def read_selection(path, *, limit=being_seed.MAX_RECORD):
+            if path == selected:
+                assert limit == being_seed.MAX_SELECTION
+            return read(path, limit=limit)
+
+        def write_selection(path, value, *, limit=being_seed.MAX_RECORD):
+            if path == selected:
+                assert limit == being_seed.MAX_SELECTION
+            return write(path, value, limit=limit)
+
+        with monkeypatch.context() as selected_limits:
+            # The signed production group selection can exceed the small
+            # generic record bound. All selection reads and writes use its own.
+            selected_limits.setattr(being_seed, '_read', read_selection)
+            selected_limits.setattr(being_seed, '_write', write_selection)
+            if native_publication:
+                return republish_group_peer(source.root, selected.parent, source._reader,
+                    authority=public, history=history, **arguments)
+            return republish_group_selection(base, selected.parent, peer_history=(ref, history), **arguments)
     with pytest.raises(OnboardingError, match='approved_onboarding_group_history_conflict'):
         update(successor['authority_history'][1:])
     assert being_seed._read(selected, limit=being_seed.MAX_SELECTION) == predecessor
+
+    if direct_peer:
+        from daimon_matrix import operator_messaging
+
+        adopt = operator_messaging.adopt_peer_authority
+
+        def lost_native_reply(*args, **kwargs):
+            adopt(*args, **kwargs)
+            raise OSError('lost native adoption reply')
+
+        monkeypatch.setattr(operator_messaging, 'adopt_peer_authority', lost_native_reply)
+        with pytest.raises(OSError, match='lost native adoption reply'):
+            update(successor['authority_history'])
+        monkeypatch.setattr(operator_messaging, 'adopt_peer_authority', adopt)
+        assert being_seed._read(selected) == predecessor
+        native, = target.document_bundle()['sources']['known_beings']
+        assert native['manifest'] == successor['manifest']
 
     original = being_seed._write
     def lost_reply(path, value, **options):
@@ -489,7 +571,32 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     history = source._load(signed=False).service.relationships.store.authority_resolver(ref)
     assert history.active.manifest.value == successor['manifest']
     verify_event(old_event, history)
-    assert target.document_bundle()['sources']['known_beings'] == []
+    known = target.document_bundle()['sources']['known_beings']
+    assert [row['manifest'] for row in known] == ([successor['manifest']] if direct_peer else [])
+
+    if native_publication:
+        from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
+
+        # A second update used to reject the still-valid membership proof
+        # because its peer authority was now one epoch behind the publication.
+        enrolled = authority_from_runtime_bundle(successor)
+        second_request = create_enrollment_request(enrolled, signing_seed=os.urandom(32),
+            encryption_private=os.urandom(32), transport_seed=os.urandom(32),
+            body_ref='rust:test:peer', embodiment_id='embodiment:' + str(uuid.uuid4()),
+            incarnation_id='incarnation:' + str(uuid.uuid4()), principal_id='rust@test',
+            created_at_ms=now, expires_at_ms=now + 60_000, nonce=os.urandom(32))
+        second_activation = authorize_enrollment_request(second_request, enrolled,
+            root_seeds=tuple(roots.secrets.values()), issued_at_ms=now)
+        second = apply_activation_to_runtime_bundle(successor, second_activation, enrolled,
+            target_endpoint='http://127.0.0.1:45998/dm-peer/v1')
+        result = republish_group_peer(source.root, selected.parent, source._reader,
+            authority=dict(schema=AUTHORITY_SCHEMA, **{key: second[key] for key in public_fields}),
+            history=second['authority_history'], operation_id=str(uuid.uuid4()),
+            expected_selection_sha256=digest(being_seed._read(selected)))
+        assert result['peer_manifest_revision'] == second['manifest']['revision']
+        assert membership.read_bytes() == retained_membership
+        history = source._load(signed=False).service.relationships.store.authority_resolver(ref)
+        verify_event(old_event, history)
 
 
 def test_invalid_history_selector_is_refused_before_private_custody(group_source, monkeypatch):

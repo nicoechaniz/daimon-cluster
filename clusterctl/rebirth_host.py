@@ -200,6 +200,13 @@ def _wait_ready(
         selector.close()
         os.close(descriptor)
     if ready != b"READY\n":
+        if events and not ready:
+            # EOF can arrive just before the process exit becomes observable.
+            # Give it a chance to flush its bounded startup diagnostic.
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
         if process.poll() is None:
             process.terminate()
         try:
@@ -404,6 +411,7 @@ def launch_rebirth_host(
     actor: str = "clusterctl-rebirth-host",
     timeout_s: float = 30.0,
     production_fence_verifier: bool = False,
+    admission_body_observer: bool = False,
     admission_client: AdmissionClient | None = None,
     admission_client_config: Path | None = None,
     admission_lease_ttl_s: int = DEFAULT_LEASE_TTL_S,
@@ -426,6 +434,9 @@ def launch_rebirth_host(
     state = _owner_directory(Path(state_dir), create=True)
     identity = _installed_identity(state, embodiment_id)
     native_selection = None
+    if admission_body_observer and (production_fence_verifier or native_source_profile is not None):
+        os.close(password_descriptor)
+        raise RebirthHostError("rebirth_host_body_observer_options_conflict")
     if native_source_profile is not None:
         if production_fence_verifier or visibility_installation is not None:
             os.close(password_descriptor)
@@ -682,9 +693,18 @@ def launch_rebirth_host(
                 command.append("--production-fence-verifier")
             if visibility_installation is not None:
                 command.extend(["--visibility-installation", str(visibility_installation)])
-            body_parent = body_child = None
-            if native_selection is not None:
+            body_parent: socket.socket | None = None
+            body_child: socket.socket | None = None
+            descriptors: tuple[int, ...] = (ready_write,)
+            if native_selection is not None or admission_body_observer:
                 body_parent, body_child = socket.socketpair()
+                descriptors += (body_child.fileno(),)
+            if native_selection is None:
+                descriptors += (password_descriptor,)
+                if body_child is not None:
+                    command.extend(["--body-observer-fd", str(body_child.fileno())])
+            else:
+                assert body_parent is not None and body_child is not None
                 try:
                     command = rebirth_native.command(native_selection, ready_write,
                         body_observer_fd=body_child.fileno())
@@ -699,8 +719,7 @@ def launch_rebirth_host(
             try:
                 process = subprocess.Popen(
                     command,
-                    pass_fds=((ready_write, body_child.fileno()) if body_child is not None
-                        else (password_descriptor, ready_write)),
+                    pass_fds=descriptors,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -727,6 +746,8 @@ def launch_rebirth_host(
             supervisor.start()
             try:
                 if body_parent is not None:
+                    from . import rebirth_native
+
                     observer = rebirth_native.NativeBodyObserver(state, origin, body_parent, process, supervisor)
                     setattr(process, '_matrix_body_observer', observer)
                     observer.thread.start()
@@ -831,6 +852,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--password-fd", type=int, required=True)
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument("--production-fence-verifier", action="store_true")
+    parser.add_argument("--admission-body-observer", action="store_true")
     parser.add_argument("--native-source-profile", type=Path)
     parser.add_argument("--admission-client-config", type=Path)
     parser.add_argument("--visibility-installation", type=Path)
@@ -842,6 +864,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.embodiment_id,
             args.password_fd,
             production_fence_verifier=args.production_fence_verifier,
+            admission_body_observer=args.admission_body_observer,
             native_source_profile=args.native_source_profile,
             admission_client_config=args.admission_client_config,
             visibility_installation=args.visibility_installation,

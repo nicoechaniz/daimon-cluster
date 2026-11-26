@@ -540,11 +540,12 @@ def _group_selection_packet_from_bundle(directory: Path, bundle: dict):
 
 
 def approved_membership_authorities(group_root: Path, bundle: dict) -> dict:
-    """Recover this owner's signed public verification context, without a channel."""
+    """Read retained verification context without reissuing it on Root changes."""
     import time
     from daimon_matrix.canonical import unb64url
-    from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
     from daimon_matrix.messaging_config import _public_identity, verify_public_binding
+    from daimon_matrix.operator_messaging import public_authority_history
+    from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA, authority_from_runtime_bundle
     from .onboarding_group_admission import public_authorities
 
     path = group_root / 'membership-authorities.json'
@@ -555,9 +556,19 @@ def approved_membership_authorities(group_root: Path, bundle: dict) -> dict:
         raise OnboardingError('approved_onboarding_membership_context_required')
     document = packet['document']
     own = authority_from_runtime_bundle(bundle)
-    identity = _public_identity(own, bundle['local_origin'], bundle['runtime_id'],
-        bundle['runtime_label'], time.time_ns() // 1000000)
-    key = unb64url(own.credentials[identity['credential_id']]['body']['signing_key']['public'])
+    coordinates = (bundle['local_origin'], bundle['runtime_id'], bundle['runtime_label'],
+        time.time_ns() // 1000000)
+    identity = _public_identity(own, *coordinates)
+    signer_epoch = own
+    binding_body = packet['binding'].get('body', {})
+    if binding_body.get('manifest_hash') != own.manifest.digest:
+        # This record supplies verification keys. Current native membership
+        # and the selected signed application still govern authorized effects.
+        authority = dict(schema=AUTHORITY_SCHEMA, **{key: bundle[key] for key in (
+            'manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')})
+        signer_epoch = public_authority_history(authority, bundle['authority_history']).select(binding_body)
+        identity = _public_identity(signer_epoch, *coordinates)
+    key = unb64url(signer_epoch.credentials[identity['credential_id']]['body']['signing_key']['public'])
     verify_public_binding(identity, key, document, packet['binding'])
     if (set(document) != {'schema', 'operation_id', 'tribe_ref', 'members', 'authority_closure'}
             or document['schema'] != 'cluster-onboarding-membership-authorities/v1'
@@ -573,7 +584,8 @@ def approved_membership_authorities(group_root: Path, bundle: dict) -> dict:
         raise OnboardingError('approved_onboarding_membership_context_required')
     authorities = public_authorities(bundle, document['authority_closure'])
     return _group_authorities_with_history(bundle, authorities,
-        {ref: authority.active for ref, authority in authorities.items()})
+        {ref: authority.active for ref, authority in authorities.items()},
+        allow_native_successor=True)
 
 
 def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str,
@@ -586,7 +598,7 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
     """
     import uuid
     import re
-    from daimon_matrix.messaging_config import create_binding, verify_binding
+    from daimon_matrix.messaging_config import create_binding
     from .onboarding_group_admission import public_authorities
 
     if (str(uuid.UUID(operation_id)) != operation_id
@@ -605,10 +617,9 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
         before = being_seed._read(path, limit=being_seed.MAX_SELECTION) if path.exists() else None
         if before is not None:
             approved = approved_membership_authorities(group_root, bundle)
-            verify_binding(hosted, before['document'], before['binding'])
             # Verification history is retained even after a member leaves. It
             # verifies old events; current native membership still owns rights.
-            if any(authority_closure.get(ref, row) != row
+            if any(authority_closure.get(ref, row) != row and approved[ref] != authorities[ref]
                     and not _extends_group_authority(approved[ref], authorities[ref])
                     for ref, row in before['document']['authority_closure'].items()):
                 raise OnboardingError('onboarding_group_membership_context_changed')
@@ -658,14 +669,20 @@ def approved_group_authorities(runtime_root: Path, group_root: Path, bundle: dic
     from daimon_matrix.messaging_config import read_application_authorities
     current = read_application_authorities(runtime_root, 'runtime.json',
         Path(selected['directory']), at_ms=time.time_ns() // 1000000)
-    from .onboarding_group_admission import merge_authorities
     group = _group_authorities_with_history(bundle, histories, current)
-    for ref in membership.keys() & group.keys():
-        if _extends_group_authority(membership[ref], group[ref]):
-            # Membership retains its earlier signed verification context. A
-            # selected group publication can advance it along the same chain.
-            del membership[ref]
-    return merge_authorities(membership, group)
+    return _merge_membership_and_group(membership, group)
+
+
+def _merge_membership_and_group(membership: dict, group: dict) -> dict:
+    from .onboarding_group_admission import merge_authorities
+
+    # Keep the membership proof intact. Only its exact signed descendants in
+    # the selected group may supersede its historical verification keys.
+    retained = {
+        ref: authority for ref, authority in membership.items()
+        if not _extends_group_authority(authority, group.get(ref))
+    }
+    return merge_authorities(retained, group)
 
 
 def _extends_group_authority(incumbent, candidate) -> bool:
@@ -683,18 +700,18 @@ def _extends_group_authority(incumbent, candidate) -> bool:
 def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
                          operation_id: str, expected_selection_sha256: str,
                          authority: dict, history: list[dict]) -> dict:
-    """Advance one group-only peer under the native writer's existing lock."""
+    """Advance a selected group's peer and its existing native trust together."""
     from daimon_matrix import native_egress, runtime
     from daimon_matrix.canonical import unb64url
     from daimon_matrix.daemon import acquire_lock
     from daimon_matrix.messaging_config import (
-        _publication_metadata, _public_identity, config_digest, read_document,
-        verify_public_binding,
+        MessagingConfigError, _publication_metadata, _public_identity, config_digest,
+        read_document, verify_public_binding,
     )
-    from daimon_matrix.operator_messaging import public_authority_history, republish
+    from daimon_matrix.operator_messaging import (
+        adopt_peer_authority, known_peer_successor, public_authority_history, republish,
+    )
     from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
-    from .onboarding_group_admission import merge_authorities
-
     if str(uuid.UUID(operation_id)) != operation_id:
         raise OnboardingError('onboarding_group_selection_operation_required')
     successor = public_authority_history(authority, history)
@@ -703,13 +720,25 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
                    successor_sha256=digest(dict(authority=authority, history=history)))
     root = private_directory(group_root)
     lock = acquire_lock(runtime_root)
+    password = bytearray()
     try:
         bundle = read_document(runtime_root / 'runtime.json')
         own = authority_from_runtime_bundle(bundle)
         local = bundle['local_origin']
         known = bundle['sources']['known_beings'] if bundle['sources'] else []
-        if ref == own.manifest.being_ref or any(row['manifest']['being_ref'] == ref for row in known):
+        if ref == own.manifest.being_ref:
             raise OnboardingError('onboarding_group_peer_requires_native_authority_writer')
+        direct = next((row for row in known if row['manifest']['being_ref'] == ref), None)
+        bundle_sha256 = config_digest(bundle)
+        native_successor_sha256 = None
+        if direct is not None:
+            try:
+                replacement, _ = known_peer_successor(direct, authority, history)
+            except MessagingConfigError:
+                raise OnboardingError('approved_onboarding_group_history_conflict') from None
+            successor_bundle = copy.deepcopy(bundle)
+            successor_bundle['sources']['known_beings'][known.index(direct)] = replacement
+            native_successor_sha256 = config_digest(successor_bundle)
         def clock():
             return time.time_ns() // 1000000
         identity = _public_identity(own, local, bundle['runtime_id'], bundle['runtime_label'], clock())
@@ -726,7 +755,8 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
             retained = being_seed._read(operation, limit=2 * being_seed.MAX_SELECTION)
             if (retained['schema'] != 'cluster-group-peer-republication/v1'
                     or retained['command'] != command
-                    or retained['runtime_sha256'] != config_digest(bundle)):
+                    or bundle_sha256 not in (retained['runtime_sha256'], retained.get('native_successor_sha256'))
+                    or retained.get('native_successor_sha256') != native_successor_sha256):
                 raise OnboardingError('onboarding_group_selection_operation_conflict')
             prior, publication = retained['selection'], retained['publication']
         else:
@@ -762,21 +792,39 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
         if current == previous and selected != prior:
             raise OnboardingError('onboarding_group_selection_changed')
         membership = approved_membership_authorities(root, bundle)
-        approved = merge_authorities(membership, approved_group)
+        if direct is not None and bundle_sha256 == native_successor_sha256:
+            approved_group[ref] = successor
+        approved = _merge_membership_and_group(membership, approved_group)
         if not operation.exists():
             private_directory(operations, create=True)
             being_seed._write(operation, dict(schema='cluster-group-peer-republication/v1',
-                command=command, runtime_sha256=config_digest(bundle), selection=prior,
-                publication=publication), limit=2 * being_seed.MAX_SELECTION)
+                command=command, runtime_sha256=bundle_sha256, selection=prior,
+                publication=publication, **({'native_successor_sha256': native_successor_sha256}
+                    if direct is not None else {})), limit=2 * being_seed.MAX_SELECTION)
             # A first operation also has to retain the new parent directory.
             descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        hosted = runtime.load_runtime(runtime_root, 'runtime.json', reader, clock=clock,
-            relationship_authorities=approved,
-            egress=native_egress.closed_visibility(clock=clock, catalog_mode='migrate'))
+        original_password = reader()
+        password[:] = original_password
+        if isinstance(original_password, bytearray):
+            original_password[:] = b'\x00' * len(original_password)
+
+        def load_hosted():
+            return runtime.load_runtime(runtime_root, 'runtime.json', lambda: bytearray(password), clock=clock,
+                relationship_authorities=approved,
+                egress=native_egress.closed_visibility(clock=clock, catalog_mode='migrate'))
+
+        hosted = load_hosted()
+        if direct is not None and bundle_sha256 != native_successor_sha256:
+            adopt_peer_authority(hosted, authority, history)
+            bundle = read_document(runtime_root / 'runtime.json')
+            if config_digest(bundle) != native_successor_sha256:
+                raise OnboardingError('onboarding_group_selection_operation_conflict')
+            approved[ref] = successor
+            hosted = load_hosted()
         installation = root / 'visibility' / 'installation.json'
         publication_result = republish(hosted, app_root,
             installation=installation if installation.exists() else None,
@@ -790,16 +838,21 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
             raise OnboardingError('approved_onboarding_group_history_conflict')
         return {**selection, 'peer_manifest_revision': successor.active.manifest.value['revision']}
     finally:
+        password[:] = b'\x00' * len(password)
         os.close(lock)
 
 
-def _group_authorities_with_history(bundle: dict, histories: dict | None, current: dict) -> dict:
+def _group_authorities_with_history(bundle: dict, histories: dict | None, current: dict,
+                                    *, allow_native_successor: bool = False) -> dict:
     if histories is None:
         return current
     from daimon_matrix.operator_messaging import public_authority_history
     from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
     # Known histories stay in their native bundle. Do not silently truncate or
     # replace an already accepted chain with another valid self-consistent one.
+    if any(histories[ref].active != authority for ref, authority in current.items()):
+        raise OnboardingError('approved_onboarding_group_history_conflict')
+    result = {ref: histories[ref] for ref in current}
     known = bundle['sources']['known_beings'] if bundle['sources'] else []
     for row in known:
         ref = row['manifest']['being_ref']
@@ -808,11 +861,11 @@ def _group_authorities_with_history(bundle: dict, histories: dict | None, curren
         native = public_authority_history(dict(schema=AUTHORITY_SCHEMA, **{
             key: row[key] for key in ('manifest', 'control_artifacts', 'control_head',
                                      'credentials', 'incarnations')}), row['authority_history'])
-        if histories[ref] != native:
+        if allow_native_successor and _extends_group_authority(histories[ref], native):
+            result[ref] = native
+        elif histories[ref] != native:
             raise OnboardingError('approved_onboarding_group_history_conflict')
-    if any(histories[ref].active != authority for ref, authority in current.items()):
-        raise OnboardingError('approved_onboarding_group_history_conflict')
-    return {ref: histories[ref] for ref in current}
+    return result
 
 
 def augmented(target, original: dict, bundle: dict) -> tuple[dict, bool]:
@@ -866,11 +919,33 @@ def augmented(target, original: dict, bundle: dict) -> tuple[dict, bool]:
         refs.append(authorities[0].state.being_ref)
         refs.sort()
     expected = additional_bundle(target, expected, identities[1])
-    if bundle != expected:
+    runtime_sha256 = digest(bundle)
+    comparison = bundle
+    if bundle != expected and (target.root / 'tribe/selection.json').exists():
+        # The live group can advance the already-known peer. The archived pair
+        # remains evidence of the original approval, not another live selection.
+        group = _group_selection_packet_from_bundle(target.root / 'tribe', bundle)
+        if group is not None and group[1] is not None:
+            from daimon_matrix.messaging_config import _read_publication
+            from daimon_matrix.operator_messaging import known_peer_successor
+
+            ref = authorities[0].state.being_ref
+            history = group[0]['authority_history'].get(ref)
+            if history is not None:
+                application, _ = _read_publication(Path(group[0]['directory']), lambda *_: None)
+                if digest(application) != group[0]['application_sha256']:
+                    raise OnboardingError('onboarding_group_selection_changed')
+                current = next(row for row in application['authorities'] if row['manifest']['being_ref'] == ref)
+                successor, _ = known_peer_successor(known, current, history)
+                actual = bundle['sources']['known_beings']
+                if successor in actual:
+                    comparison = copy.deepcopy(bundle)
+                    comparison['sources']['known_beings'][actual.index(successor)] = known
+    if comparison != expected:
         prior = copy.deepcopy(expected)
         prior['sources']['known_beings'] = [prior_known if row['manifest']['being_ref'] == authorities[0].state.being_ref else row
             for row in prior['sources']['known_beings']]
-        if successor_authority is None or bundle != prior:
+        if successor_authority is None or comparison != prior:
             raise OnboardingError('existing_onboarding_target_preserved')
         pending = True
     from daimon_matrix.weave import verify_event
@@ -1003,7 +1078,7 @@ def augmented(target, original: dict, bundle: dict) -> tuple[dict, bool]:
                 or len(proof) != 32 or document['policy']['proof_key_id'] != 'sha256:' + hashlib.sha256(proof).hexdigest()):
             raise OnboardingError('native_onboarding_peer_plan_conflict')
     receipt = dict(schema='cluster-onboarding-peer-runtime-observation/v1', plan_digest=digest(target.plan),
-        origin=bundle['local_origin'], runtime_sha256=digest(bundle),
+        origin=bundle['local_origin'], runtime_sha256=runtime_sha256,
         credential_runtime_sha256=digest(original), link_id=plan['link_id'],
         peer_being_ref=authorities[0].state.being_ref)
     return receipt, complete and not pending

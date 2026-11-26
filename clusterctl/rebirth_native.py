@@ -130,17 +130,17 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
                 and previous['result'].get('replacement_intent_hash') == digest(intent)))
             and not previous.get('runtime_observation') and not previous.get('logical_observation'))
         manifest_field = 'successor_manifest_hash'
-        authority_only = (
+        verified_authority_advance = (
             previous['state'] == 'completed' and recover_operation_id is None
             and prior.get(manifest_field) in authority_predecessors
             and prior.get(manifest_field) != intent.get(manifest_field)
-            and {k: v for k, v in prior.items() if k != manifest_field}
-            == {k: v for k, v in intent.items() if k != manifest_field}
         )
+        changed = {'runtime_call'}
+        if verified_authority_advance:
+            changed.add(manifest_field)
         if (previous['state'] != 'completed' and not recovering
-                or (not authority_only
-                    and {k: v for k, v in prior.items() if k != 'runtime_call'}
-                    != {k: v for k, v in intent.items() if k != 'runtime_call'})
+                or {k: v for k, v in prior.items() if k not in changed}
+                    != {k: v for k, v in intent.items() if k not in changed}
                 or not isinstance(before, dict) or not isinstance(after, dict)
                 or set(before) != {'operation', 'selection'} or set(after) != set(before)
                 or before['operation'] != 'native-source' or after['operation'] != 'native-source'):

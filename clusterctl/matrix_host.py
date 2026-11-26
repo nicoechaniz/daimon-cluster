@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import stat
 import sys
 import threading
@@ -31,6 +32,13 @@ from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
 MATRIX_CONTRACT_COMMIT = "017e5516992cb500387e933067e38ace255558f6"
+
+# Both releases satisfy the same Cluster wire contract. The second includes
+# the owner-signed native visibility installation for a private sibling pair.
+_MATRIX_CONTRACT_COMPATIBLE_COMMITS = frozenset((
+    MATRIX_CONTRACT_COMMIT,
+    "a356df712c6376138f7f52e6a7d56311b75b5cf6",
+))
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_RECOVERY_SNAPSHOT_SCHEMA = "dm.cluster-matrix-recovery-snapshot/v1"
@@ -166,7 +174,7 @@ def _matrix_api() -> dict[str, Any]:
         TypeError,
     ) as exception:
         raise MatrixHostError("daimon_matrix_commit_unverifiable") from exception
-    if installed_commit != MATRIX_CONTRACT_COMMIT:
+    if installed_commit not in _MATRIX_CONTRACT_COMPATIBLE_COMMITS:
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     expected = {
         "BODY_SNAPSHOT_SCHEMA": "dm.cluster-body-snapshot/v1",
@@ -641,6 +649,22 @@ def _origin(value: Any) -> dict[str, str]:
     return {field: value[field] for field in sorted(fields)}
 
 
+def _require_registry_origin(registry: Registry, embodiment_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
+    origin = _origin(value)
+    if origin["embodiment_id"] != embodiment_id:
+        raise MatrixHostError("matrix_embodiment_mismatch")
+    try:
+        record = registry.status(embodiment_id)
+    except RegistryError as exception:
+        raise MatrixHostError("matrix_registry_unavailable") from exception
+    if (
+        record.get("body_ref") != origin["body_ref"]
+        or record.get("status") != "running"
+        or record.get("current_incarnation_id") != origin["incarnation_id"]
+    ):
+        raise MatrixHostError("matrix_origin_registry_mismatch")
+    return record
+
 class MatrixHostAdapter:
     """Exact injected readers/verifiers for one guarded embodiment."""
 
@@ -661,20 +685,7 @@ class MatrixHostAdapter:
         self.clock = clock
 
     def require_origin(self, value: Mapping[str, Any]) -> dict[str, Any]:
-        origin = _origin(value)
-        if origin["embodiment_id"] != self.embodiment_id:
-            raise MatrixHostError("matrix_embodiment_mismatch")
-        try:
-            record = self.registry.status(self.embodiment_id)
-        except RegistryError as exception:
-            raise MatrixHostError("matrix_registry_unavailable") from exception
-        if (
-            record.get("body_ref") != origin["body_ref"]
-            or record.get("status") != "running"
-            or record.get("current_incarnation_id") != origin["incarnation_id"]
-        ):
-            raise MatrixHostError("matrix_origin_registry_mismatch")
-        return record
+        return _require_registry_origin(self.registry, self.embodiment_id, value)
 
     def body_snapshot(
         self,
@@ -823,11 +834,10 @@ def _matrix_client(
     """Load one exact least-authority local client."""
 
     api = _matrix_api()
-    adapter = MatrixHostAdapter(state_dir, embodiment_id)
     root = _owner_directory(matrix_root(state_dir, embodiment_id))
     bundle = _public_bundle(root, "runtime.json")
     origin = _origin(bundle.get("local_origin"))
-    adapter.require_origin(origin)
+    _require_registry_origin(Registry(state_dir), embodiment_id, origin)
     socket_name = bundle.get("socket")
     if (
         not isinstance(socket_name, str)
@@ -1373,6 +1383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--password-fd", type=int, required=True)
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument("--guardian-pid", type=int)
+    parser.add_argument("--body-observer-fd", type=int)
     parser.add_argument("--visibility-installation", type=Path)
     parser.add_argument("--provision-visibility", action="store_true")
     parser.add_argument(
@@ -1386,7 +1397,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         _diagnostic("matrix_visibility_provision_never_serves")
         return 2
+    if args.body_observer_fd is not None and (
+        args.guardian_pid is None or args.provision_visibility or args.production_fence_verifier
+    ):
+        _diagnostic("matrix_body_observer_options_conflict")
+        return 2
     lock_descriptor: int | None = None
+    body_observer = None
     stopping = threading.Event()
     guardian: threading.Thread | None = None
     try:
@@ -1411,9 +1428,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.production_fence_verifier
             else None
         )
-        adapter = None if args.provision_visibility else MatrixHostAdapter(
-            args.state_dir, args.embodiment_id, fence_store=fence_store
-        )
+        if args.body_observer_fd is not None:
+            from .onboarding_runtime import connected_body_reader
+
+            body_observer = socket.socket(fileno=args.body_observer_fd)
+            body_observer.settimeout(5)
+            body_reader = connected_body_reader(body_observer)
+            adapter = None
+        elif args.provision_visibility:
+            adapter = body_reader = None
+        else:
+            adapter = MatrixHostAdapter(args.state_dir, args.embodiment_id, fence_store=fence_store)
+            body_reader = adapter.body_snapshot
         root = _owner_directory(matrix_root(args.state_dir, args.embodiment_id))
         bundle = _public_bundle(root, args.bundle)
         origin = _origin(bundle.get("local_origin"))
@@ -1424,9 +1450,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or record.get("status") != "stopped"
                     or record.get("current_incarnation_id") is not None):
                 raise MatrixHostError("matrix_visibility_requires_stopped_body")
-        else:
-            assert adapter is not None
+        elif adapter is not None:
             adapter.require_origin(origin)
+        elif body_reader(
+            origin["body_ref"], origin["embodiment_id"], origin["incarnation_id"],
+            time.time_ns() // 1_000_000,
+        ).get("state") != "running":
+            raise MatrixHostError("matrix_admitted_body_unavailable")
         socket_name = bundle.get("socket")
         if (
             not isinstance(socket_name, str)
@@ -1468,7 +1498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.bundle,
             _password_reader(args.password_fd),
             clock=clock,
-            body_reader=None if adapter is None else adapter.body_snapshot,
+            body_reader=body_reader,
             curator_fence_verifier=None if adapter is None else adapter.verify_fence,
             curator_effect_observer=None if adapter is None else adapter.effect_observer,
             **visibility_options,
@@ -1496,6 +1526,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     finally:
         stopping.set()
+        if body_observer is not None:
+            body_observer.close()
         if lock_descriptor is not None:
             os.close(lock_descriptor)
 

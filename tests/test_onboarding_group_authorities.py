@@ -420,6 +420,10 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     source, target, peer, peer_bundle, old_event = group_source
     selected, base, document, sign = history_selection(source, peer_bundle)
     being_seed._write(selected, dict(document=document, binding=sign(base, document)))
+    # Existing large selectors are valid JSON and pin an authenticated history.
+    with selected.open('ab') as stream:
+        stream.write(b' ' * being_seed.MAX_RECORD)
+    assert selected.stat().st_size > being_seed.MAX_RECORD
     base = source._load(signed=False)
     ref = peer.manifest.being_ref
     public_fields = ('manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')
@@ -430,7 +434,7 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
         expected_selection_sha256=None)
     membership = selected.parent / 'membership-authorities.json'
     retained_membership = membership.read_bytes()
-    predecessor = being_seed._read(selected)
+    predecessor = being_seed._read(selected, limit=being_seed.MAX_SELECTION)
     peer_custody, = (target.home.parent.parent / 'candidate' / 'custody').glob('*/root/holder.json')
     roots = EncryptedKeystore(peer_custody).open(
         lambda: bytearray((peer_custody.parents[1] / 'root.unlock').read_bytes()))
@@ -468,7 +472,7 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
         return republish_group_selection(base, selected.parent, peer_history=(ref, history), **arguments)
     with pytest.raises(OnboardingError, match='approved_onboarding_group_history_conflict'):
         update(successor['authority_history'][1:])
-    assert being_seed._read(selected) == predecessor
+    assert being_seed._read(selected, limit=being_seed.MAX_SELECTION) == predecessor
 
     original = being_seed._write
     def lost_reply(path, value, **options):

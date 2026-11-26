@@ -228,7 +228,7 @@ older code is pruned on later selection. Pending dispatches prevent pruning.
 Receiving receipts default to 128 (at most 2 MiB per receipt). For one
 existing target the operator can pair an executor `--receipt-limit` with
 the same value under the gateway's `receipt_limits`, keyed by the normal
-Home/owner/service target key. Both bounds allow up to 256. The override
+Home/owner/service target key. Both bounds allow up to 512. The override
 is outside the grant and receiver descriptors, so package identity and
 request receipts remain valid. Select the executor first. The gateway
 retains its aggregate 4,096-operation ceiling across 32 grants, with

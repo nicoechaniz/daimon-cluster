@@ -293,14 +293,17 @@ def test_selected_receiver_capacity_preserves_and_extends_receipts(setup):
         new.run(envelope(c, dict(next_value, request_id="too-many"), raw))
     assert new.run(envelope(c, next_value, raw))["state"] == "ready"
     assert new.restarts == 1
+    larger = ManagerFixture(c, receipt_limit=512)
+    assert larger.run(envelope(c, dict(next_value, request_id="with-headroom"), raw))["state"] == "ready"
+    assert original.read_bytes() == receipt
 
 
 def test_gateway_receipt_override_selects_an_existing_target_without_rekeying(setup):
     _, _, conf, _, _, _, _ = setup
     target = key(conf['grants'][0]['receiver'])
-    selected = dict(conf, receipt_limits={target: 256})
+    selected = dict(conf, receipt_limits={target: 512})
     assert configuration(selected)['grants'] == configuration(conf)['grants']
-    for invalid in ({'other': 256}, {target: 257}, {target: True}):
+    for invalid in ({'other': 512}, {target: 513}, {target: True}):
         with pytest.raises(ValueError, match='invalid_service_receipt_limits'):
             configuration(dict(conf, receipt_limits=invalid))
 

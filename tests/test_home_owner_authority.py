@@ -111,6 +111,49 @@ def test_actor_lookup_refuses_a_historical_pin_against_current_source(monkeypatc
         authority.actor('being-one')
 
 
+def test_current_successor_keeps_human_session_only_for_the_same_active_origin(tmp_path, monkeypatch):
+    import clusterctl.homes.authority as module
+    import daimon_matrix.messaging_config as config
+
+    a = NativeAuthority(tmp_path/'bindings', tmp_path/'relationships', {},
+                        authority_source=tmp_path/'current')
+    document = dict(control_artifacts=[], control_head='current', manifest={},
+                    credentials={}, incarnations={}, authority_history=[])
+    monkeypatch.setattr(config, 'protected_read', lambda _: json.dumps(document))
+    origin = {'body_ref': 'existing-home-origin'}
+    old = SimpleNamespace(manifest=SimpleNamespace(being_ref='being', digest='old'))
+    active = True
+
+    def validate_origin(value, *, require_active):
+        assert value == origin and require_active
+        if not active:
+            raise ValueError('origin_not_active')
+
+    current = SimpleNamespace(manifest=SimpleNamespace(being_ref='being', digest='current'),
+                              accepted_manifest_hashes=('old', 'current'),
+                              validate_origin=validate_origin)
+    monkeypatch.setattr(module, 'public_history', lambda _: current)
+    monkeypatch.setattr(a, 'bindings', lambda: [
+        dict(enabled=True, being_ref='being', origin=origin, label='Home Owner',
+             authority=old, human_id=123, human_name='Paired Human')])
+
+    monkeypatch.setattr(a, 'authority_source', None)
+    before = a.actors()
+    monkeypatch.setattr(a, 'authority_source', tmp_path/'current')
+    after = a.actors()
+    assert after['human:telegram:123'] == before['human:telegram:123']
+    assert after['being'].revision != before['being'].revision
+
+    active = False
+    with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
+        a.actors()
+    active = True
+    current.accepted_manifest_hashes = ('unrelated', 'current')
+    document['control_head'] = 'unrelated-current-head'
+    with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
+        a.actors()
+
+
 def test_read_snapshot_is_lazy_success_only_nested_and_instance_local(monkeypatch, tmp_path):
     from types import SimpleNamespace
     authority = NativeAuthority(tmp_path/'bindings', tmp_path/'relationships', {})

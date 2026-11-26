@@ -208,7 +208,7 @@ class NativeAuthority:
     def _actors(self):
         # An actor pin alone can be a valid historical Root. Actor-based owner
         # and browser checks must also agree with the selected current source.
-        self.authorities()
+        authorities = self.authorities()
         result = {}
         for row in self.bindings():
             if not row["enabled"]:
@@ -218,7 +218,7 @@ class NativeAuthority:
                 {
                     "ref": ref,
                     "origin": row["origin"],
-                    "manifest": row["authority"].manifest.digest,
+                    "manifest": authorities[ref].manifest.digest,
                 }
             )
             result[ref] = Actor(ref, "being", revision, row["label"])
@@ -306,17 +306,28 @@ class NativeAuthority:
                 raise ValueError("home_authority_source_fork")
             histories[reference] = authority
         web = {row["being_ref"] for row in rows if "human_ref" in row}
-        for reference, authority in selected.items():
+        for row in rows:
+            reference = row["being_ref"]
+            authority = row["authority"]
             if reference not in histories and reference in web:
                 # Explicit operator web registrations carry their own signed,
                 # active public origin. Founder discovery is not Home admission.
                 # _bindings rechecks the protected proof and origin each read.
                 histories[reference] = authority
-            elif (
-                reference not in histories
-                or histories[reference].manifest.digest != authority.manifest.digest
-            ):
-                raise ValueError("home_actor_authority_source_stale")
+            else:
+                current = histories.get(reference)
+                if current is None:
+                    raise ValueError("home_actor_authority_source_stale")
+                if current.manifest.digest != authority.manifest.digest:
+                    # The SDK has verified the entire signed successor chain.
+                    # Only the already-pinned, still-active origin can follow it.
+                    history = getattr(current, "accepted_manifest_hashes", ())
+                    if authority.manifest.digest not in history:
+                        raise ValueError("home_actor_authority_source_stale")
+                    try:
+                        current.validate_origin(row["origin"], require_active=True)
+                    except ValueError:
+                        raise ValueError("home_actor_authority_source_stale") from None
         return histories
 
     def tribes(self):

@@ -208,12 +208,20 @@ def test_reader_command_is_bounded_json_rpc_with_exact_control(tmp_path, monkeyp
         client.prepare_apply_control(command,tmp_path/'foreign.json')
 
 
-def test_reader_failure_keeps_update_complete_and_resumes_same_native_effects(tmp_path, monkeypatch):
+@pytest.mark.parametrize('omitted_receiver', [False, True])
+def test_reader_completion_checks_coverage_before_code_effects(tmp_path, monkeypatch, omitted_receiver):
     selected=spec()
     selected['reader_completion']=str(tmp_path/'readers.json')
     routes=dict(checkpoint=str(tmp_path/'reader-progress.json'), owners={'current':{}})
     monkeypatch.setattr(managed,'load_code_update_readers',lambda _:routes)
-    monkeypatch.setattr(managed,'ReaderCommandClient',lambda _:SimpleNamespace(_call=lambda _:dict(ready=True)))
+    audience = [{'being_ref': 'current', 'embodiment_id': 'current-body'}]
+    if omitted_receiver:
+        audience.append({'being_ref': 'new-member', 'embodiment_id': 'new-member-body'})
+    status = dict(server={'embodiment_id': 'current-body'}, gate={'readers': []},
+        runtime_status={'receiving': {'rosters': {'tribe': {
+            'schema': 'dm.runtime.tribe-roster/v1', 'audience': audience,
+            'tribe_ref': 'tribe', 'membership_proofs': [], 'required_authority_epochs': []}}}})
+    monkeypatch.setattr(managed,'ReaderCommandClient',lambda _:SimpleNamespace(_call=lambda _:status))
     config=SimpleNamespace(jobs=tmp_path/'jobs')
     monkeypatch.setattr(onboarding_host.HostConfig,'load',lambda _:config)
     monkeypatch.setattr(managed,'JobStore',lambda _:SimpleNamespace(_load=lambda name:dict(plan=dict(name=name))))
@@ -231,6 +239,11 @@ def test_reader_failure_keeps_update_complete_and_resumes_same_native_effects(tm
         return dict(receiving_readiness='qualified-local-projection',communication_acceptance='unobserved')
     monkeypatch.setattr(managed,'complete_code_update_readers',finish)
     result=managed.run_code_update(selected)
+    if omitted_receiver:
+        assert not result['complete'] and result['targets'] == [] and not effects
+        assert result['reader_completion']['phase'] == 'cohort-preflight'
+        assert result['reader_completion']['failure']['code'] == 'receiving_required_cohort_changed'
+        return
     assert not result['complete'] and result['pending'] == [] and len(effects)==3
     assert all(row['status']=='updated' for row in result['targets'])
     result=managed.run_code_update(selected)
@@ -329,7 +342,7 @@ def test_pending_reader_checkpoint_keeps_same_operation_resumable(tmp_path):
     preflight_reader_checkpoint(checkpoint, spec()['operation_id'])
 
 
-@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "retained", "owned-stopped"])
+@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "stale-peer", "retained", "owned-stopped"])
 def test_native_profile_command_composes_existing_readers_and_keeps_the_same_deadline(
     tmp_path, monkeypatch, mode
 ):
@@ -353,11 +366,19 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
     )
     core = {k: v for k, v in selected.items() if k != "reader_completion"}
 
-    def observation(code):
+    def observation(code, body="root"):
         return dict(
             process={"pid": 42},
-            server={"embodiment_id": "body"},
+            server={"embodiment_id": body},
+            gate={"readers": []},
             runtime_status=dict(
+                receiving={"rosters": {"tribe": {
+                    "schema": "dm.runtime.tribe-roster/v1",
+                    "tribe_ref": "tribe", "membership_proofs": [],
+                    "required_authority_epochs": [code if mode == "stale-peer" and body == "peer" else "epoch"],
+                    "audience": [{"being_ref": name, "embodiment_id": name}
+                        for name in ("root", "peer")],
+                }}},
                 loaded_runtime=dict(
                     qualified_startup=dict(
                         code_digest=code, matrix_wheel_sha256="d" * 64
@@ -373,7 +394,7 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
         )
 
     before, after = observation("a" * 64), observation("b" * 64)
-    peer = observation("c" * 64)
+    peer = observation("c" * 64, "peer")
     routes = dict(
         checkpoint=str(tmp_path / "readers.json"),
         owners={
@@ -463,6 +484,10 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
         with pytest.raises(OnboardingError, match="reader_owner_unavailable"):
             managed.run_native_profile_update(selected)
         assert "software" not in calls
+    elif mode == "stale-peer":
+        with pytest.raises(OnboardingError, match="receiving_cohort_membership_conflict"):
+            managed.run_native_profile_update(selected)
+        assert calls == ["root", "peer"]
     else:
         result = managed.run_native_profile_update(selected, check_only=mode == "check")
         if mode == "check":

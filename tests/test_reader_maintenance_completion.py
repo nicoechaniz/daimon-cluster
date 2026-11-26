@@ -24,6 +24,7 @@ def cohort(tmp_path, monkeypatch):
         assert options['expected_selection'] in selections.values()
         return dict(reader=copy.deepcopy(next(row for row in vector['readers']
             if row['being_ref']==owner.root.name)), gate=copy.deepcopy(owner.gate),
+            roster=dict(schema='dm.runtime.tribe-roster/v1', audience=copy.deepcopy(vector['readers'])),
             identity_expires_at_ms=options['expires_at_ms'])
     monkeypatch.setattr(receiving, 'observe_current_reader', observe)
     monkeypatch.setattr(receiving, 'conversation_cohort', lambda _:copy.deepcopy(vector))
@@ -53,6 +54,17 @@ def cohort(tmp_path, monkeypatch):
         release_digest='9'*64, deadline_ns=time.monotonic_ns()+60_000_000_000,
         checkpoint=tmp_path/'progress.json')
     return owners, options, calls, fail, vector
+
+
+def test_reader_coverage_preserves_selected_siblings_without_requiring_dormant_ones():
+    roster = dict(schema='dm.runtime.tribe-roster/v1', audience=[
+        dict(being_ref='one', embodiment_id='primary'),
+        dict(being_ref='one', embodiment_id='sibling'),
+        dict(being_ref='two', embodiment_id='peer'),
+    ])
+    receiving.require_reader_coverage(roster, {'primary', 'peer'}, {'primary', 'peer'})
+    with pytest.raises(OnboardingError, match='receiving_required_cohort_changed'):
+        receiving.require_reader_coverage(roster, {'primary', 'peer'}, {'primary', 'sibling', 'peer'})
 
 
 def test_ordinary_completion_and_repeat_are_no_lifecycle_and_read_only(tmp_path, monkeypatch):

@@ -149,6 +149,7 @@ def test_current_successor_keeps_human_session_only_for_the_same_active_origin(t
         a.actors()
     active = True
     current.accepted_manifest_hashes = ('unrelated', 'current')
+    document['control_head'] = 'unrelated-current-head'
     with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
         a.actors()
 

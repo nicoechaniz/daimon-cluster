@@ -911,11 +911,33 @@ def augmented(target, original: dict, bundle: dict) -> tuple[dict, bool]:
         refs.append(authorities[0].state.being_ref)
         refs.sort()
     expected = additional_bundle(target, expected, identities[1])
-    if bundle != expected:
+    runtime_sha256 = digest(bundle)
+    comparison = bundle
+    if bundle != expected and (target.root / 'tribe/selection.json').exists():
+        # The live group can advance the already-known peer. The archived pair
+        # remains evidence of the original approval, not another live selection.
+        group = _group_selection_packet_from_bundle(target.root / 'tribe', bundle)
+        if group is not None and group[1] is not None:
+            from daimon_matrix.messaging_config import _read_publication
+            from daimon_matrix.operator_messaging import known_peer_successor
+
+            ref = authorities[0].state.being_ref
+            history = group[0]['authority_history'].get(ref)
+            if history is not None:
+                application, _ = _read_publication(Path(group[0]['directory']), lambda *_: None)
+                if digest(application) != group[0]['application_sha256']:
+                    raise OnboardingError('onboarding_group_selection_changed')
+                current = next(row for row in application['authorities'] if row['manifest']['being_ref'] == ref)
+                successor, _ = known_peer_successor(known, current, history)
+                actual = bundle['sources']['known_beings']
+                if successor in actual:
+                    comparison = copy.deepcopy(bundle)
+                    comparison['sources']['known_beings'][actual.index(successor)] = known
+    if comparison != expected:
         prior = copy.deepcopy(expected)
         prior['sources']['known_beings'] = [prior_known if row['manifest']['being_ref'] == authorities[0].state.being_ref else row
             for row in prior['sources']['known_beings']]
-        if successor_authority is None or bundle != prior:
+        if successor_authority is None or comparison != prior:
             raise OnboardingError('existing_onboarding_target_preserved')
         pending = True
     from daimon_matrix.weave import verify_event
@@ -1048,7 +1070,7 @@ def augmented(target, original: dict, bundle: dict) -> tuple[dict, bool]:
                 or len(proof) != 32 or document['policy']['proof_key_id'] != 'sha256:' + hashlib.sha256(proof).hexdigest()):
             raise OnboardingError('native_onboarding_peer_plan_conflict')
     receipt = dict(schema='cluster-onboarding-peer-runtime-observation/v1', plan_digest=digest(target.plan),
-        origin=bundle['local_origin'], runtime_sha256=digest(bundle),
+        origin=bundle['local_origin'], runtime_sha256=runtime_sha256,
         credential_runtime_sha256=digest(original), link_id=plan['link_id'],
         peer_being_ref=authorities[0].state.being_ref)
     return receipt, complete and not pending

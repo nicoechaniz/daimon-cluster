@@ -552,6 +552,11 @@ or selector write. The owner command completes the changes under one lock.
 Apply the usual scoped restart and authenticated receiving check afterward.
 A local authority transition still uses the local authority writer.
 
+An admitted body with a selected group can keep its archived pair approval
+and publication intact. Startup reconciles the current native peer with the
+exact successor in the signed group selection while verifying the historical
+pair against its original proof.
+
 Do not load the new runtime through an old current-state group selector while
 performing this transition. Retain the already verified foreign-authority closure
 for the offline native operation; after publication, ordinary startup must again

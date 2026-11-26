@@ -538,9 +538,17 @@ Pass one bounded JSON request containing `operation_id`,
 takes the native writer lock and retains the signed preceding selection and
 publication before advancing either. Retry the same request after an interrupted
 publication or selector write. The owner command completes publication and
-selection under the lock. Apply the usual scoped restart and authenticated
-receiving check afterward. Direct-peer trust and a local authority transition
-still use their respective native authority writers.
+selection under the lock. Group selectors and their retained snapshots can be
+larger than ordinary seed records because they carry signed epoch history; the
+selector writer uses the same limit as initial publication.
+
+Select a compatible Matrix SDK before resuming the owning group service. The
+SDK must carry the approved relationship history into the visibility verifier
+so the existing signed participant acceptances can survive an authority
+advance. After starting the service, use authenticated receiving observation
+and verify the original visibility installation against the selected
+application. Direct-peer trust and a local authority transition still use
+their respective native authority writers.
 
 Do not load the new runtime through an old current-state group selector while
 performing this transition. Retain the already verified foreign-authority closure

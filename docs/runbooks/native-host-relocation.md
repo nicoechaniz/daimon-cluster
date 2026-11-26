@@ -545,6 +545,22 @@ the receiving operator record rather than this runbook.
 
 ### Retain owner credentials across a current authority update
 
+A Home identity pin can follow an exact verified successor of its existing
+manifest while its configured origin remains active. Human session revisions
+stay the same. Existing owner credentials still require acceptance against the
+current owner revision. Unrelated histories and retired origins cannot use this
+continuity path.
+
+When the origin itself changes, qualify the new Home binding against the
+successor before advancing signed authority. On an already accepted successor,
+recover forward:
+validate the prior manifest in the signed history, stage just the new public
+proof, and switch its pointer and current origin in the same protected identity
+binding. Preserve the Home and paired-human references and verify the actual
+actor catalog before accepting the existing owner credential below. Check both
+an authenticated application and an owner-local read. Home, Interaction and
+other protected applications behind the same gateway share this dependency.
+
 A registered home owner credential retains its original home, being and binding
 revision. Advancing the being's current authority must not silently rebind that
 key or require a new browser login. After the shared gateway's current public

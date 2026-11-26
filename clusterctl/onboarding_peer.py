@@ -289,7 +289,9 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
         if peer_history is not None:
             ref, epochs = peer_history
             command['peer_history_sha256'] = digest(dict(being_ref=ref, history=epochs))
-        retained = being_seed._read(operation, limit=2 * being_seed.MAX_SELECTION) if operation.exists() else None
+        operation_limit = 2 * being_seed.MAX_SELECTION + being_seed.MAX_RECORD
+        retained = (being_seed._read(operation, limit=operation_limit)
+                    if operation.exists() else None)
         predecessor = before if retained is None else retained['before']
         if (digest(predecessor) != expected_selection_sha256
                 or set(predecessor) != {'document', 'binding'}):
@@ -313,6 +315,8 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
             candidate = retained['candidate']
         # This validates the actual new publication, group identity and current
         # owner signature before retaining an operation or replacing selection.
+        if len(json.dumps(candidate, sort_keys=True).encode()) > being_seed.MAX_SELECTION:
+            raise OnboardingError('onboarding_group_selection_too_large')
         _validate_group_packet(group_root, candidate,
             lambda value, binding: verify_binding(hosted, value, binding))
         if before not in (predecessor, candidate):
@@ -321,7 +325,7 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
         if retained is None:
             being_seed._write(operation, dict(schema='cluster-onboarding-group-republication/v1',
                 command=command, before=predecessor, candidate=candidate),
-                limit=2 * being_seed.MAX_SELECTION)
+                limit=operation_limit)
         for directory in (operations, group_root):
             descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:

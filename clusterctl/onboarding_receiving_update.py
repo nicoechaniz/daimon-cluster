@@ -217,6 +217,13 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
 
 
 
+def conversation_membership_basis(roster: dict) -> str:
+    fields = ('schema', 'tribe_ref', 'audience', 'membership_proofs', 'required_authority_epochs')
+    if not isinstance(roster, dict) or roster.get('schema') != 'dm.runtime.tribe-roster/v1':
+        raise ValueError
+    return digest({key: roster[key] for key in fields})
+
+
 def conversation_cohort(proofs: dict[str, dict]) -> dict:
     """Compare messaging membership while retaining each receiver's full CAS.
 
@@ -226,12 +233,9 @@ def conversation_cohort(proofs: dict[str, dict]) -> dict:
     """
     if not isinstance(proofs, dict) or not 1 <= len(proofs) <= 256:
         raise OnboardingError('receiving_cohort_membership_conflict')
-    fields = ('schema', 'tribe_ref', 'audience', 'membership_proofs', 'required_authority_epochs')
     try:
         rosters = {name: proof['roster'] for name,proof in proofs.items()}
-        if any(roster['schema'] != 'dm.runtime.tribe-roster/v1' for roster in rosters.values()):
-            raise ValueError
-        bases = {digest({key: roster[key] for key in fields}) for roster in rosters.values()}
+        bases = {conversation_membership_basis(roster) for roster in rosters.values()}
         if len(bases) != 1:
             raise ValueError
         readers = sorted((proof['reader'] for proof in proofs.values()),
@@ -242,6 +246,20 @@ def conversation_cohort(proofs: dict[str, dict]) -> dict:
             local_roster_sha256={name:roster['roster_sha256'] for name,roster in rosters.items()})
     except (KeyError, TypeError, ValueError):
         raise OnboardingError('receiving_cohort_membership_conflict') from None
+
+def require_reader_coverage(roster: dict, observed_bodies: set[str], selected_bodies: set[str]) -> None:
+    """Use signed membership, not the operator route list, to establish coverage."""
+    try:
+        if roster['schema'] != 'dm.runtime.tribe-roster/v1':
+            raise ValueError
+        audience = {row['embodiment_id']: row['being_ref'] for row in roster['audience']}
+        observed_beings = {audience[body] for body in observed_bodies}
+    except (KeyError, TypeError, ValueError):
+        raise OnboardingError('receiving_cohort_roster_unready') from None
+    if (not audience or observed_beings != set(audience.values())
+            or (selected_bodies & audience.keys()) - observed_bodies):
+        raise OnboardingError('receiving_required_cohort_changed')
+
 
 def _reader_active(reader: dict, now: int) -> bool:
     """Check selected validity without converting indefinite authority to a date."""
@@ -320,6 +338,9 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
             pending = {name:pool.submit(observe,name,owner) for name,owner in owners.items()}
             proofs = {name:future.result() for name,future in pending.items()}
         vector = conversation_cohort(proofs)
+        require_reader_coverage(next(iter(proofs.values()))['roster'],
+            {row['embodiment_id'] for row in vector['readers']},
+            {row['embodiment_id'] for proof in proofs.values() for row in proof['gate']['readers']})
         now = time.time_ns() // 1_000_000
         if any(_reader_proof_expiry(proof) <= now for proof in proofs.values()):
             raise OnboardingError('receiving_cohort_observation_expired')

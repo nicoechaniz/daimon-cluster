@@ -528,6 +528,29 @@ def test_native_sdk_successor_refuses_other_changes_and_unfinished_start(tmp_pat
     assert journal.latest_for_target('target') == original
 
 
+def test_native_start_can_select_sdk_and_verified_authority_together(tmp_path):
+    from clusterctl.operation_journal import OperationJournal
+
+    journal = OperationJournal(tmp_path / 'state')
+    before = _startup_intent()
+    original = rebirth_native.start_record(journal, 'target', before, actor='fixture', embodiment_id='body')
+    journal.advance(original['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    after = _next_sdk(before)
+    after['successor_manifest_hash'] = 'verified-successor'
+    known = frozenset({before['successor_manifest_hash']})
+    changed_config = _next_sdk(before)
+    changed_config['successor_manifest_hash'] = after['successor_manifest_hash']
+    changed_config['runtime_call']['selection']['config'] = '/another/config.json'
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        rebirth_native.start_record(journal, 'target', changed_config, actor='fixture',
+            embodiment_id='body', authority_predecessors=known)
+    current = rebirth_native.start_record(journal, 'target', after, actor='fixture',
+        embodiment_id='body', authority_predecessors=known)
+    assert current['intent']['native_start_predecessor']['operation_id'] == original['operation_id']
+    assert rebirth_native.start_record(journal, 'target', after, actor='fixture',
+        embodiment_id='body', authority_predecessors=known) == current
+
+
 def test_native_profile_selection_is_canonical_idempotent_and_preserves_binding(tmp_path):
     from clusterctl.rebirth import _read_json
     previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/source.json',

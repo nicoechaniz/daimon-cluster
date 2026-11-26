@@ -523,6 +523,25 @@ document remains in the operation record. Repeating the operation recovers the
 same successor without re-signing or rewriting history. Keep egress stopped
 until the runtime and required peers have accepted the coherent update.
 
+When the Matrix application has published a verified foreign group successor,
+pass its `peer_history=(being_ref, history)` to the same selector writer.
+The operation pins that exact history and requires it to retain the signed
+predecessor prefix. The older signed membership context remains usable as a
+historical anchor when the selected group chain extends it. This requires no
+bilateral route or replacement membership.
+
+For a receiver whose trust in the peer comes from the group alone, run the
+existing owner environment's `python -B -m clusterctl.onboarding_peer` with
+`--runtime-root`, `--group-root` and the scope's held `--password-fd`.
+Pass one bounded JSON request containing `operation_id`,
+`expected_selection_sha256`, `authority` and `history` on stdin. The process
+takes the native writer lock and retains the signed preceding selection and
+publication before advancing either. Retry the same request after an interrupted
+publication or selector write. The owner command completes publication and
+selection under the lock. Apply the usual scoped restart and authenticated
+receiving check afterward. Direct-peer trust and a local authority transition
+still use their respective native authority writers.
+
 Do not load the new runtime through an old current-state group selector while
 performing this transition. Retain the already verified foreign-authority closure
 for the offline native operation; after publication, ordinary startup must again

@@ -256,11 +256,13 @@ def approved_group_application(hosted, group_root: Path):
 
 
 def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
-                              expected_selection_sha256: str) -> dict:
+                              expected_selection_sha256: str,
+                              peer_history: tuple[str, list[dict]] | None = None) -> dict:
     """Advance an existing group selector after its application republication.
 
     The previous selector is authenticated in its own historical epoch. The
-    successor must be valid now, preserving the selected group and all routes.
+    successor must be valid now and preserve the selected group. An explicitly
+    refreshed peer's verified history can only extend the signed old history.
     A retained exact operation recovers a lost reply without re-signing history.
     The caller holds the native runtime writer and keeps egress stopped.
     """
@@ -284,6 +286,9 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
         operation = operations / (operation_id + '.json')
         command = dict(operation_id=operation_id,
             expected_selection_sha256=expected_selection_sha256)
+        if peer_history is not None:
+            ref, epochs = peer_history
+            command['peer_history_sha256'] = digest(dict(being_ref=ref, history=epochs))
         retained = being_seed._read(operation, limit=2 * being_seed.MAX_SELECTION) if operation.exists() else None
         predecessor = before if retained is None else retained['before']
         if (digest(predecessor) != expected_selection_sha256
@@ -293,6 +298,11 @@ def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
         application, _ = read_publication(hosted, group_root / 'application')
         document = copy.deepcopy(predecessor['document'])
         document['application_sha256'] = digest(application)
+        if peer_history is not None:
+            previous_history = document.get('authority_history', {}).get(ref)
+            if previous_history is None or epochs[:len(previous_history)] != previous_history:
+                raise OnboardingError('approved_onboarding_group_history_conflict')
+            document['authority_history'][ref] = copy.deepcopy(epochs)
         if retained is None:
             candidate = dict(document=document, binding=create_binding(hosted, document))
         else:
@@ -590,11 +600,12 @@ def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str
     with being_seed._locked(group_root):
         before = being_seed._read(path, limit=being_seed.MAX_SELECTION) if path.exists() else None
         if before is not None:
-            approved_membership_authorities(group_root, bundle)
+            approved = approved_membership_authorities(group_root, bundle)
             verify_binding(hosted, before['document'], before['binding'])
             # Verification history is retained even after a member leaves. It
             # verifies old events; current native membership still owns rights.
             if any(authority_closure.get(ref, row) != row
+                    and not _extends_group_authority(approved[ref], authorities[ref])
                     for ref, row in before['document']['authority_closure'].items()):
                 raise OnboardingError('onboarding_group_membership_context_changed')
             authority_closure = {**before['document']['authority_closure'], **authority_closure}
@@ -644,7 +655,138 @@ def approved_group_authorities(runtime_root: Path, group_root: Path, bundle: dic
     current = read_application_authorities(runtime_root, 'runtime.json',
         Path(selected['directory']), at_ms=time.time_ns() // 1000000)
     from .onboarding_group_admission import merge_authorities
-    return merge_authorities(membership, _group_authorities_with_history(bundle, histories, current))
+    group = _group_authorities_with_history(bundle, histories, current)
+    for ref in membership.keys() & group.keys():
+        if _extends_group_authority(membership[ref], group[ref]):
+            # Membership retains its earlier signed verification context. A
+            # selected group publication can advance it along the same chain.
+            del membership[ref]
+    return merge_authorities(membership, group)
+
+
+def _extends_group_authority(incumbent, candidate) -> bool:
+    from daimon_matrix.authority_epochs import RootHistoryAuthority
+
+    return (isinstance(incumbent, RootHistoryAuthority)
+            and isinstance(candidate, RootHistoryAuthority)
+            and len(incumbent.historical) < len(candidate.historical)
+            and tuple(candidate.historical[:len(incumbent.historical) + 1])
+                == (*incumbent.historical, incumbent.active)
+            and tuple(candidate.successors[:len(incumbent.successors)])
+                == tuple(incumbent.successors))
+
+
+def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
+                         operation_id: str, expected_selection_sha256: str,
+                         authority: dict, history: list[dict]) -> dict:
+    """Advance one group-only peer under the native writer's existing lock."""
+    from daimon_matrix import native_egress, runtime
+    from daimon_matrix.canonical import unb64url
+    from daimon_matrix.daemon import acquire_lock
+    from daimon_matrix.messaging_config import (
+        _publication_metadata, _public_identity, config_digest, read_document,
+        verify_public_binding,
+    )
+    from daimon_matrix.operator_messaging import public_authority_history, republish
+    from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
+    from .onboarding_group_admission import merge_authorities
+
+    if str(uuid.UUID(operation_id)) != operation_id:
+        raise OnboardingError('onboarding_group_selection_operation_required')
+    successor = public_authority_history(authority, history)
+    ref = successor.active.manifest.being_ref
+    command = dict(expected_selection_sha256=expected_selection_sha256, being_ref=ref,
+                   successor_sha256=digest(dict(authority=authority, history=history)))
+    root = private_directory(group_root)
+    lock = acquire_lock(runtime_root)
+    try:
+        bundle = read_document(runtime_root / 'runtime.json')
+        own = authority_from_runtime_bundle(bundle)
+        local = bundle['local_origin']
+        known = bundle['sources']['known_beings'] if bundle['sources'] else []
+        if ref == own.manifest.being_ref or any(row['manifest']['being_ref'] == ref for row in known):
+            raise OnboardingError('onboarding_group_peer_requires_native_authority_writer')
+        def clock():
+            return time.time_ns() // 1000000
+        identity = _public_identity(own, local, bundle['runtime_id'], bundle['runtime_label'], clock())
+        key = unb64url(own.credentials[identity['credential_id']]['body']['signing_key']['public'])
+        def verify(value, binding):
+            verify_public_binding(identity, key, value, binding)
+
+        operations = root / 'selection-operations'
+        operation = operations / (operation_id + '-peer.json')
+        app_root = root / 'application'
+        selected = being_seed._read(root / 'selection.json', limit=being_seed.MAX_SELECTION)
+        current_publication = read_document(app_root / 'publication.json')
+        if operation.exists():
+            retained = being_seed._read(operation, limit=2 * being_seed.MAX_SELECTION)
+            if (retained['schema'] != 'cluster-group-peer-republication/v1'
+                    or retained['command'] != command
+                    or retained['runtime_sha256'] != config_digest(bundle)):
+                raise OnboardingError('onboarding_group_selection_operation_conflict')
+            prior, publication = retained['selection'], retained['publication']
+        else:
+            prior, publication = selected, current_publication
+
+        if digest(prior) != expected_selection_sha256:
+            raise OnboardingError('onboarding_group_selection_changed')
+        verify(prior['document'], prior['binding'])
+        metadata = _publication_metadata(app_root, publication, verify)
+        previous = read_document(metadata / 'application.json')
+        verify(previous, read_document(metadata / 'binding.json'))
+        if config_digest(previous) != publication['body']['application_sha256'] or (
+                digest(previous) != prior['document']['application_sha256']):
+            raise OnboardingError('onboarding_group_selection_changed')
+        approved_group = _group_public_history(prior['document'], prior['binding'], previous)
+        incumbent = approved_group.get(ref)
+        if not _extends_group_authority(incumbent, successor):
+            raise OnboardingError('approved_onboarding_group_history_conflict')
+        if history[:len(prior['document']['authority_history'][ref])] != prior['document']['authority_history'][ref]:
+            raise OnboardingError('approved_onboarding_group_history_conflict')
+        current_meta = _publication_metadata(app_root, current_publication, verify)
+        current = read_document(current_meta / 'application.json')
+        verify(current, read_document(current_meta / 'binding.json'))
+        expected = copy.deepcopy(previous)
+        expected['authorities'] = [authority if row['manifest']['being_ref'] == ref else row
+                                   for row in previous['authorities']]
+        retired = {(item['embodiment_id'], item['body_ref'])
+                   for item in authority['manifest']['embodiments'] if item['status'] == 'retired'}
+        expected['roster'] = [row for row in previous['roster'] if row['being_ref'] != ref
+                              or (row['embodiment_id'], row['body_ref']) not in retired]
+        if current not in (previous, expected) or config_digest(current) != current_publication['body']['application_sha256']:
+            raise OnboardingError('onboarding_group_selection_changed')
+        if current == previous and selected != prior:
+            raise OnboardingError('onboarding_group_selection_changed')
+        membership = approved_membership_authorities(root, bundle)
+        approved = merge_authorities(membership, approved_group)
+        if not operation.exists():
+            private_directory(operations, create=True)
+            being_seed._write(operation, dict(schema='cluster-group-peer-republication/v1',
+                command=command, runtime_sha256=config_digest(bundle), selection=prior,
+                publication=publication), limit=2 * being_seed.MAX_SELECTION)
+            # A first operation also has to retain the new parent directory.
+            descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        hosted = runtime.load_runtime(runtime_root, 'runtime.json', reader, clock=clock,
+            relationship_authorities=approved,
+            egress=native_egress.closed_visibility(clock=clock, catalog_mode='migrate'))
+        installation = root / 'visibility' / 'installation.json'
+        publication_result = republish(hosted, app_root,
+            installation=installation if installation.exists() else None,
+            group_peer_successor=(authority, history))
+        if publication_result['application_sha256'] != config_digest(expected):
+            raise OnboardingError('onboarding_group_selection_changed')
+        selection = republish_group_selection(hosted, root, operation_id=operation_id,
+            expected_selection_sha256=expected_selection_sha256, peer_history=(ref, history))
+        observed = approved_group_authorities(runtime_root, root, bundle)
+        if observed.get(ref) != successor:
+            raise OnboardingError('approved_onboarding_group_history_conflict')
+        return {**selection, 'peer_manifest_revision': successor.active.manifest.value['revision']}
+    finally:
+        os.close(lock)
 
 
 def _group_authorities_with_history(bundle: dict, histories: dict | None, current: dict) -> dict:
@@ -935,3 +1077,34 @@ def adopt_authority(target, authority: dict, history: list, *, native_visibility
         _atomic_write(directory / 'authority-adoption.json', canonical_bytes(dict(
             document=receipt, binding=create_binding(current, receipt))))
         return receipt
+
+
+def main(argv=None) -> int:
+    """Owner-local repair of one selected group's signed peer history."""
+    import argparse
+    import sys
+    from daimon_matrix.daemon import _password_reader
+    from .onboarding import refusal_diagnostic
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument('--runtime-root', type=Path, required=True)
+    parser.add_argument('--group-root', type=Path, required=True)
+    parser.add_argument('--password-fd', type=int, required=True)
+    args = parser.parse_args(argv)
+    try:
+        raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
+        request = json.loads(raw) if len(raw) <= being_seed.MAX_SELECTION else None
+        if (args.password_fd < 3 or not isinstance(request, dict)
+                or set(request) != {'operation_id', 'expected_selection_sha256', 'authority', 'history'}):
+            raise OnboardingError('onboarding_group_selection_operation_required')
+        result = republish_group_peer(args.runtime_root, args.group_root,
+                                      _password_reader(args.password_fd), **request)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except Exception as error:
+        print(json.dumps(refusal_diagnostic(error, stage='group-peer-republication')), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

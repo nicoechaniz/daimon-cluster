@@ -688,8 +688,9 @@ def launch_rebirth_host(
                 command.append("--production-fence-verifier")
             if visibility_installation is not None:
                 command.extend(["--visibility-installation", str(visibility_installation)])
-            body_parent = body_child = None
-            descriptors = (ready_write,)
+            body_parent: socket.socket | None = None
+            body_child: socket.socket | None = None
+            descriptors: tuple[int, ...] = (ready_write,)
             if native_selection is not None or admission_body_observer:
                 body_parent, body_child = socket.socketpair()
                 descriptors += (body_child.fileno(),)
@@ -698,6 +699,7 @@ def launch_rebirth_host(
                 if body_child is not None:
                     command.extend(["--body-observer-fd", str(body_child.fileno())])
             else:
+                assert body_parent is not None and body_child is not None
                 try:
                     command = rebirth_native.command(native_selection, ready_write,
                         body_observer_fd=body_child.fileno())

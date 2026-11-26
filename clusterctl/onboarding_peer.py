@@ -690,15 +690,17 @@ def _extends_group_authority(incumbent, candidate) -> bool:
 def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
                          operation_id: str, expected_selection_sha256: str,
                          authority: dict, history: list[dict]) -> dict:
-    """Advance one group-only peer under the native writer's existing lock."""
+    """Advance a selected group's peer and its existing native trust together."""
     from daimon_matrix import native_egress, runtime
     from daimon_matrix.canonical import unb64url
     from daimon_matrix.daemon import acquire_lock
     from daimon_matrix.messaging_config import (
-        _publication_metadata, _public_identity, config_digest, read_document,
-        verify_public_binding,
+        MessagingConfigError, _publication_metadata, _public_identity, config_digest,
+        read_document, verify_public_binding,
     )
-    from daimon_matrix.operator_messaging import public_authority_history, republish
+    from daimon_matrix.operator_messaging import (
+        adopt_peer_authority, known_peer_successor, public_authority_history, republish,
+    )
     from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
     from .onboarding_group_admission import merge_authorities
 
@@ -710,13 +712,25 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
                    successor_sha256=digest(dict(authority=authority, history=history)))
     root = private_directory(group_root)
     lock = acquire_lock(runtime_root)
+    password = bytearray()
     try:
         bundle = read_document(runtime_root / 'runtime.json')
         own = authority_from_runtime_bundle(bundle)
         local = bundle['local_origin']
         known = bundle['sources']['known_beings'] if bundle['sources'] else []
-        if ref == own.manifest.being_ref or any(row['manifest']['being_ref'] == ref for row in known):
+        if ref == own.manifest.being_ref:
             raise OnboardingError('onboarding_group_peer_requires_native_authority_writer')
+        direct = next((row for row in known if row['manifest']['being_ref'] == ref), None)
+        bundle_sha256 = config_digest(bundle)
+        native_successor_sha256 = None
+        if direct is not None:
+            try:
+                replacement, _ = known_peer_successor(direct, authority, history)
+            except MessagingConfigError:
+                raise OnboardingError('approved_onboarding_group_history_conflict') from None
+            successor_bundle = copy.deepcopy(bundle)
+            successor_bundle['sources']['known_beings'][known.index(direct)] = replacement
+            native_successor_sha256 = config_digest(successor_bundle)
         def clock():
             return time.time_ns() // 1000000
         identity = _public_identity(own, local, bundle['runtime_id'], bundle['runtime_label'], clock())
@@ -733,7 +747,8 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
             retained = being_seed._read(operation, limit=2 * being_seed.MAX_SELECTION)
             if (retained['schema'] != 'cluster-group-peer-republication/v1'
                     or retained['command'] != command
-                    or retained['runtime_sha256'] != config_digest(bundle)):
+                    or bundle_sha256 not in (retained['runtime_sha256'], retained.get('native_successor_sha256'))
+                    or retained.get('native_successor_sha256') != native_successor_sha256):
                 raise OnboardingError('onboarding_group_selection_operation_conflict')
             prior, publication = retained['selection'], retained['publication']
         else:
@@ -769,21 +784,39 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
         if current == previous and selected != prior:
             raise OnboardingError('onboarding_group_selection_changed')
         membership = approved_membership_authorities(root, bundle)
+        if direct is not None and bundle_sha256 == native_successor_sha256:
+            approved_group[ref] = successor
         approved = merge_authorities(membership, approved_group)
         if not operation.exists():
             private_directory(operations, create=True)
             being_seed._write(operation, dict(schema='cluster-group-peer-republication/v1',
-                command=command, runtime_sha256=config_digest(bundle), selection=prior,
-                publication=publication), limit=2 * being_seed.MAX_SELECTION)
+                command=command, runtime_sha256=bundle_sha256, selection=prior,
+                publication=publication, **({'native_successor_sha256': native_successor_sha256}
+                    if direct is not None else {})), limit=2 * being_seed.MAX_SELECTION)
             # A first operation also has to retain the new parent directory.
             descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        hosted = runtime.load_runtime(runtime_root, 'runtime.json', reader, clock=clock,
-            relationship_authorities=approved,
-            egress=native_egress.closed_visibility(clock=clock, catalog_mode='migrate'))
+        original_password = reader()
+        password[:] = original_password
+        if isinstance(original_password, bytearray):
+            original_password[:] = b'\x00' * len(original_password)
+
+        def load_hosted():
+            return runtime.load_runtime(runtime_root, 'runtime.json', lambda: bytearray(password), clock=clock,
+                relationship_authorities=approved,
+                egress=native_egress.closed_visibility(clock=clock, catalog_mode='migrate'))
+
+        hosted = load_hosted()
+        if direct is not None and bundle_sha256 != native_successor_sha256:
+            adopt_peer_authority(hosted, authority, history)
+            bundle = read_document(runtime_root / 'runtime.json')
+            if config_digest(bundle) != native_successor_sha256:
+                raise OnboardingError('onboarding_group_selection_operation_conflict')
+            approved[ref] = successor
+            hosted = load_hosted()
         installation = root / 'visibility' / 'installation.json'
         publication_result = republish(hosted, app_root,
             installation=installation if installation.exists() else None,
@@ -797,6 +830,7 @@ def republish_group_peer(runtime_root: Path, group_root: Path, reader, *,
             raise OnboardingError('approved_onboarding_group_history_conflict')
         return {**selection, 'peer_manifest_revision': successor.active.manifest.value['revision']}
     finally:
+        password[:] = b'\x00' * len(password)
         os.close(lock)
 
 

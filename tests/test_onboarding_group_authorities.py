@@ -428,9 +428,9 @@ def test_signed_history_selector_loads_historical_proof_without_pair_or_foreign_
     assert set(source.root.glob('peer-*.sqlite')) == old_peer_files
 
 
-@pytest.mark.parametrize('native_publication', [False, True])
+@pytest.mark.parametrize(('native_publication', 'direct_peer'), [(False, False), (True, False), (True, True)])
 def test_group_peer_update_recovers_selector_and_keeps_membership_history(
-        group_source, monkeypatch, native_publication):
+        group_source, monkeypatch, native_publication, direct_peer):
     from inspect import signature
     from clusterctl.onboarding import OnboardingError
     from clusterctl.onboarding_peer import (
@@ -456,6 +456,13 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     ref = peer.manifest.being_ref
     public_fields = ('manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')
     before_authority = dict(schema=AUTHORITY_SCHEMA, **{k: peer_bundle[k] for k in public_fields})
+    if direct_peer:
+        bundle = target.document_bundle()
+        bundle['sources']['known_beings'] = [dict(
+            **{key: peer_bundle[key] for key in public_fields},
+            authority_history=peer_bundle['authority_history'], ledger_filename='known-peer.sqlite')]
+        (source.root / 'runtime.json').write_bytes(canonical_bytes(bundle))
+        base = source._load(signed=False)
     retain_membership_authorities(base, selected.parent, operation_id=str(uuid.uuid4()),
         tribe_ref=document['tribe_ref'], authority_closure={
             ref: dict(authority=before_authority, history=peer_bundle['authority_history'])},
@@ -511,6 +518,23 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
         update(successor['authority_history'][1:])
     assert being_seed._read(selected) == predecessor
 
+    if direct_peer:
+        from daimon_matrix import operator_messaging
+
+        adopt = operator_messaging.adopt_peer_authority
+
+        def lost_native_reply(*args, **kwargs):
+            adopt(*args, **kwargs)
+            raise OSError('lost native adoption reply')
+
+        monkeypatch.setattr(operator_messaging, 'adopt_peer_authority', lost_native_reply)
+        with pytest.raises(OSError, match='lost native adoption reply'):
+            update(successor['authority_history'])
+        monkeypatch.setattr(operator_messaging, 'adopt_peer_authority', adopt)
+        assert being_seed._read(selected) == predecessor
+        native, = target.document_bundle()['sources']['known_beings']
+        assert native['manifest'] == successor['manifest']
+
     original = being_seed._write
     def lost_reply(path, value, **options):
         original(path, value, **options)
@@ -526,7 +550,8 @@ def test_group_peer_update_recovers_selector_and_keeps_membership_history(
     history = source._load(signed=False).service.relationships.store.authority_resolver(ref)
     assert history.active.manifest.value == successor['manifest']
     verify_event(old_event, history)
-    assert target.document_bundle()['sources']['known_beings'] == []
+    known = target.document_bundle()['sources']['known_beings']
+    assert [row['manifest'] for row in known] == ([successor['manifest']] if direct_peer else [])
 
 
 def test_invalid_history_selector_is_refused_before_private_custody(group_source, monkeypatch):

@@ -539,17 +539,18 @@ send and receive. Republish an affected application and visibility installation
 when their active routing or authority binding changes. Do not reissue the
 unchanged membership verification context as part of that rollout.
 
-For a receiver whose trust in the peer comes from the group alone, run the
-existing owner environment's `python -B -m clusterctl.onboarding_peer` with
+For a receiver with that peer in its selected group, run the existing owner
+environment's `python -B -m clusterctl.onboarding_peer` with
 `--runtime-root`, `--group-root` and the scope's held `--password-fd`.
 Pass one bounded JSON request containing `operation_id`,
 `expected_selection_sha256`, `authority` and `history` on stdin. The process
 takes the native writer lock and retains the signed preceding selection and
-publication before advancing either. Retry the same request after an interrupted
-publication or selector write. The owner command completes publication and
-selection under the lock. Apply the usual scoped restart and authenticated
-receiving check afterward. Direct-peer trust and a local authority transition
-still use their respective native authority writers.
+publication before advancing either. If it already knows the peer directly,
+the command advances that native peer record through the existing adoption
+writer. Retry the same request after an interrupted native adoption, publication
+or selector write. The owner command completes the changes under one lock.
+Apply the usual scoped restart and authenticated receiving check afterward.
+A local authority transition still uses the local authority writer.
 
 Do not load the new runtime through an old current-state group selector while
 performing this transition. Retain the already verified foreign-authority closure

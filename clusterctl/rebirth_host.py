@@ -515,39 +515,12 @@ def launch_rebirth_host(
             }
             if native_selection is not None:
                 intent["runtime_call"] = {"operation":"native-source", "selection":native_selection}
-            record = journal.latest_for_target(target)
-            if native_selection is not None:
-                record = rebirth_native.start_record(
-                    journal, target, intent, actor=actor, embodiment_id=embodiment_id,
-                    recover_operation_id=recover_native_start,
-                    authority_predecessors=identity["verified_predecessor_manifests"])
-            elif record is None:
-                record = journal.plan(
-                    operation="rebirth-start",
-                    target=target,
-                    idempotency_key=f"rebirth-start:{identity['activation_id']}",
-                    intent=intent,
-                    expected_precondition={"install_state": "completed"},
-                    intended_transition={
-                        "registry_status": "running",
-                        "incarnation_id": origin["incarnation_id"],
-                    },
-                    audit_identity={"actor": actor, "target": embodiment_id},
-                )
-            elif (
-                record["operation"] != "rebirth-start"
-                or record["intent"] != intent
-                or record["state"]
-                not in {
-                    "planned",
-                    "runtime-dispatching",
-                    "runtime-applied",
-                    "logical-committed",
-                    "audited",
-                    "completed",
-                }
-            ):
-                raise RebirthHostError("rebirth_host_journal_conflict")
+            from . import rebirth_native
+
+            record = rebirth_native.start_record(
+                journal, target, intent, actor=actor, embodiment_id=embodiment_id,
+                recover_operation_id=recover_native_start,
+                authority_predecessors=identity["verified_predecessor_manifests"])
             if record["state"] == "planned":
                 record = journal.advance(record["operation_id"], "runtime-dispatching")
             # Acquire only after the local operation lock and durable intent,

@@ -800,7 +800,27 @@ def handler(app, *, owner=False):
             self._headers_sent = True
             super().end_headers()
 
+        def error_body(self, status, body):
+            defaults = {
+                400: ("invalid_request", "This request could not be read."),
+                401: ("sign_in_required", "Sign in to open this page."),
+                403: ("denied", "This account does not have access to this page."),
+                404: ("not_found", "This page or resource is unavailable."),
+                405: ("method_not_allowed", "This action is not supported here."),
+                410: ("gone", "This page is no longer available."),
+                429: ("try_later", "Too many requests. Try again in a moment."),
+                503: ("unavailable", "Access is temporarily unavailable. Try again in a moment."),
+            }
+            code, message = defaults.get(status, ("request_failed", "The request could not be completed."))
+            return {**body, "status": body.get("status", code), "message": body.get("message", message)}
+
         def respond(self, status, body, kind="application/json", cookies=(), headers=(), form_action="'self'", style_inline=False, telegram_sdk=False, cache_control="no-store", image_data=False):
+            if status >= 400 and isinstance(body, dict) and (not body or body == {"status": "denied"}):
+                body = self.error_body(status, body)
+                document = (self.headers.get("Sec-Fetch-Dest") in ("document", "iframe")
+                            or "text/html" in self.headers.get("Accept", ""))
+                if document and not owner and self.command in ("GET", "HEAD"):
+                    kind, body = "text/plain; charset=utf-8", body["message"].encode()
             if isinstance(body, dict):
                 body = json.dumps(body).encode()
             if status == 200 and cache_control != 'no-store':
@@ -1297,9 +1317,9 @@ def handler(app, *, owner=False):
                                 self.wfile.write(block)
                 else:
                     self.respond(404, {})
-            except (ValueError, KeyError, OSError, urllib.error.URLError):
+            except (ValueError, KeyError, OSError, urllib.error.URLError) as error:
                 if not getattr(self, "_headers_sent", False):
-                    self.respond(404, {})
+                    self.respond(503 if str(error) == "home_actor_authority_source_stale" else 404, {})
                 else:
                     self.close_connection = True
             finally:
@@ -1558,8 +1578,11 @@ def handler(app, *, owner=False):
                         self.respond(200, status)
                 else:
                     self.respond(404, {})
-            except (ValueError, KeyError, OSError, urllib.error.URLError):
-                self.respond(403, {"status": "denied"})
+            except (ValueError, KeyError, OSError, urllib.error.URLError) as error:
+                if str(error) == "home_actor_authority_source_stale":
+                    self.respond(503, {})
+                else:
+                    self.respond(403, {"status": "denied"})
 
     return Handler
 

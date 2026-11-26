@@ -70,6 +70,35 @@ def test_cross_home_public_discovery_cannot_reuse_local_private_entitlement(syst
     assert not catalog(app,'one',None,False)['apps']
 
 
+def test_authority_snapshot_is_owned_by_each_catalog_reader(system, monkeypatch):
+    from contextlib import contextmanager
+    from contextvars import ContextVar
+
+    app, _ = system
+    populated(app)
+    active = ContextVar('read_snapshot', default=False)
+    entries = app.entries
+
+    @contextmanager
+    def snapshot():
+        token = active.set(True)
+        try:
+            yield
+        finally:
+            active.reset(token)
+
+    def observed_entries(*args, **kwargs):
+        assert active.get()
+        return entries(*args, **kwargs)
+
+    monkeypatch.setattr(app.authority, 'read_snapshot', snapshot, raising=False)
+    monkeypatch.setattr(app, 'entries', observed_entries)
+    reader = app.authority.actor('human')
+    with snapshot():
+        assert len(catalog(app, 'one', reader, False, local_only=True)['apps']) == 1
+        assert len(catalog(app, 'one', reader, False)['apps']) == 2
+
+
 def test_source_failure_keeps_usable_apps_and_reports_partial_without_private_error(system):
     app,_=system;populated(app)
     class Offline:

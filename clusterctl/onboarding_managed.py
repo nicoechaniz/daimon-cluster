@@ -1482,6 +1482,24 @@ def run_code_status(spec: dict) -> dict:
         effects='observation-only', receiving_readiness='unobserved')
 
 
+def check_reader_coverage(observations: dict) -> None:
+    from .onboarding_receiving_update import conversation_membership_basis, require_reader_coverage
+
+    try:
+        bodies = {status['server']['embodiment_id'] for status in observations.values()}
+        selected = {row['embodiment_id'] for status in observations.values()
+            for row in status['gate']['readers']}
+        rosters = [status['runtime_status']['receiving']['rosters']['tribe']
+            for status in observations.values()]
+        bases = {conversation_membership_basis(roster) for roster in rosters}
+    except (KeyError, TypeError, ValueError):
+        raise OnboardingError('receiving_cohort_roster_unready') from None
+    if len(bases) != 1:
+        raise OnboardingError('receiving_cohort_membership_conflict')
+    for roster in rosters:
+        require_reader_coverage(roster, bodies, selected)
+
+
 def run_code_update(spec: dict) -> dict:
     """Reuse the owner/unit journals; never create a second batch effect journal."""
     spec = validate_code_update(spec)
@@ -1497,18 +1515,28 @@ def run_code_update(spec: dict) -> dict:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
         owned_stops = code_update_owned_stops(backend,plans,spec)
+        observations = {}
         for name, client in code_update_reader_clients(reader_routes, backend=backend, plans=plans).items():
             client.deadline_ns = deadline
             if reader_routes['owners'][name].get('job',name) in owned_stops:
                 continue  # Its native bootstrap revalidates and restores this exact operation.
             try:
-                client._call(dict(action='status'))
+                observations[name] = client._call(dict(action='status'))
             except Exception as error:
                 from .onboarding import refusal_diagnostic
                 return dict(schema='cluster-native-code-maintenance-result/v1', complete=False,
                     candidate_digest=spec['candidate']['code_digest'], targets=[], pending=spec['targets'],
                     receiving_readiness='unobserved', reader_completion=dict(name=name,
                         phase='owner-preflight', failure=refusal_diagnostic(error, stage='current-readers')))
+        if len(observations) == len(reader_routes['owners']):
+            try:
+                check_reader_coverage(observations)
+            except OnboardingError as error:
+                from .onboarding import refusal_diagnostic
+                return dict(schema='cluster-native-code-maintenance-result/v1', complete=False,
+                    candidate_digest=spec['candidate']['code_digest'], targets=[], pending=spec['targets'],
+                    receiving_readiness='unobserved', reader_completion=dict(
+                        phase='cohort-preflight', failure=refusal_diagnostic(error, stage='current-readers')))
     owner = ManagedRuntime(backend)
     candidate = (Path(spec['candidate']['code']), spec['candidate']['code_digest'])
     results = []
@@ -1600,6 +1628,7 @@ def run_native_profile_update(spec: dict, *, check_only: bool = False) -> dict:
     if len(updated) != 1:
         raise OnboardingError('receiving_current_reader_binding_required')
     selections = {}
+    observations = {}
     from .operation_journal import OperationJournal
     retained_journal = OperationJournal.existing(Path(core['journal']))
     retained = None if retained_journal is None else retained_journal.get(core['operation_id'])
@@ -1617,7 +1646,8 @@ def run_native_profile_update(spec: dict, *, check_only: bool = False) -> dict:
                 raise OnboardingError('receiving_cohort_selection_changed')
             selections[name] = frozen
             continue
-        observed = _selection(client._call(dict(action='status')))
+        observations[name] = client._call(dict(action='status'))
+        observed = _selection(observations[name])
         if (name == updated[0] and retained is not None
                 and retained['intent'].get('native_profile_maintenance') == core):
             if retained.get('result') is not None:
@@ -1627,6 +1657,8 @@ def run_native_profile_update(spec: dict, *, check_only: bool = False) -> dict:
         if expected is not None and observed != expected:
             raise OnboardingError('receiving_cohort_selection_changed')
         selections[name] = observed
+    if len(observations) == len(clients):
+        check_reader_coverage(observations)
     result = run_profile_maintenance(core,check_only=check_only,deadline_ns=deadline)
     if check_only:
         return {**result,'reader_routes_observed':len(clients)}

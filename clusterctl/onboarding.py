@@ -94,6 +94,7 @@ _DIAGNOSTIC_CODES = frozenset({
     'receiving_reader_owner_unavailable', 'receiving_reader_owner_import_unavailable',
     'receiving_current_reader_binding_required', 'receiving_code_update_receipt_required',
     'receiving_reader_checkpoint_unresolved',
+    'receiving_required_cohort_changed', 'receiving_cohort_roster_unready', 'receiving_cohort_membership_conflict',
     'receiving_control_binding_conflict', 'receiving_control_process_changed',
     'receiving_control_not_accepted', 'receiving_control_completion_uncertain',
     'receiving_owner_deadline_expired',

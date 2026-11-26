@@ -724,10 +724,19 @@ def test_http_proof_snapshot_reuses_actor_reads_but_not_later_revocation(tmp_pat
         connection.request('HEAD','/catalog.json',headers=headers)
         response=connection.getresponse();assert response.status==200 and response.read()==b''
         assert authority.loads-before==3
+        connection.request('GET','/missing',headers={**headers,'Accept':'text/html'})
+        response=connection.getresponse()
+        assert response.status==404 and response.getheader('Content-Type').startswith('text/plain')
+        assert response.read()==b'This page or resource is unavailable.'
         authority.invalid = True
         connection.request('GET','/catalog.json',headers=headers)
-        response=connection.getresponse();response.read()
-        assert response.status != 200  # No stale successful fallback.
+        response=connection.getresponse();body=json.loads(response.read())
+        assert response.status==503 and body['status']=='unavailable' and body['message']
+        connection.request('GET','/service-access/s-test',headers={**headers,'Sec-Fetch-Dest':'document'})
+        response=connection.getresponse()
+        assert response.status==503 and response.getheader('Content-Type').startswith('text/plain')
+        assert b'Try again' in response.read()
+        assert b'home_actor_authority_source_stale' not in json.dumps(body).encode()
         for method in ('GET', 'POST'):
             connection.request(method,'/signin',headers=headers)
             response=connection.getresponse();response.read()

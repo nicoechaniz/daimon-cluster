@@ -234,6 +234,14 @@ exec python -m clusterctl.rebirth_host \
   3<TARGET_PASSWORD
 ```
 
+When several bodies share the same Cluster state, select the target's
+owner-only hosting client with `--admission-client-config PATH`. Other bodies
+continue using their own selection or the existing default. For an ordinary
+(non-Source) target with a verified native visibility installation, pass
+`--visibility-installation PATH`; the configured runtime authenticates its
+own visibility instead of using the receive-only profile. Native Source
+profiles continue to select visibility in their existing Source configuration.
+
 After that check, stop the foreground supervisor cleanly and install the
 reviewed template. Keep the source password root-only; systemd exposes a
 private copy to the unprivileged service and the shell opens only descriptor 3:

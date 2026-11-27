@@ -375,6 +375,26 @@ def test_roster_and_clock_remain_fresh_after_proof_cache_warming(tmp_path, monke
     assert not a.tribe_member('home', 'tribe', human)
 
 
+def test_cache_can_hold_current_authority_and_history_mix(tmp_path):
+    a = authority(tmp_path)
+    calls = []
+    def construct(value):
+        calls.append(value['id'])
+        return {'public': value['id']}
+    documents = [
+        ('authority', {'id': f'binding-{i}', 'fixture': 'a' * 8500})
+        for i in range(8)
+    ] + [
+        ('history', {'id': f'history-{i}', 'fixture': 'b' * length})
+        for i, length in enumerate((205000, 18000, 23000, 14000, 17000))
+    ]
+    for _ in range(2):
+        for kind, value in documents:
+            assert a._constructed(kind, value, construct) == {'public': value['id']}
+    assert len(calls) == len(documents)
+    assert 16 * 1024 * 1024 < a._proof_cache_bytes <= a._proof_cache_limit
+
+
 def test_accounting_limit_evicts_individually_cacheable_entries(tmp_path):
     a = authority(tmp_path)
     a._proof_cache_limit = 150000

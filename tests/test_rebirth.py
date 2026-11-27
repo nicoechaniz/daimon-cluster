@@ -1176,6 +1176,24 @@ def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
     assert time.time_ns() // 1_000_000 < lease_expires_at_ms
 
 
+def test_missing_external_tribe_selection_is_refused_before_start(short_tmp_path):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    group_root = short_tmp_path / "owner-output" / "tribe"
+    group_root.mkdir(parents=True, mode=0o700)
+    embodiment = installed["embodiment_id"]
+
+    with pytest.raises(rebirth_host.RebirthHostError, match="rebirth_host_tribe_preflight_refused"):
+        rebirth_host.launch_rebirth_host(
+            state, embodiment, _descriptor(fixture["password"]), tribe_root=group_root
+        )
+
+    assert Registry(state).status(embodiment)["status"] == "stopped"
+    assert OperationJournal(state).open_operations() == []
+
+
 def test_admission_is_rechecked_before_first_runtime_effect(
     short_tmp_path, monkeypatch
 ):

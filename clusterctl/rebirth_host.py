@@ -416,7 +416,7 @@ def launch_rebirth_host(
     admission_client_config: Path | None = None,
     admission_lease_ttl_s: int = DEFAULT_LEASE_TTL_S,
     visibility_installation: Path | None = None,
-    with_tribe: bool = False,
+    tribe_root: Path | None = None,
     native_source_profile: Path | None = None,
     recover_native_start: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:
@@ -439,7 +439,7 @@ def launch_rebirth_host(
         os.close(password_descriptor)
         raise RebirthHostError("rebirth_host_body_observer_options_conflict")
     if native_source_profile is not None:
-        if production_fence_verifier or visibility_installation is not None or with_tribe:
+        if production_fence_verifier or visibility_installation is not None or tribe_root is not None:
             os.close(password_descriptor)
             raise RebirthHostError("rebirth_host_native_options_conflict")
         from . import rebirth_native
@@ -448,12 +448,12 @@ def launch_rebirth_host(
         except BaseException:
             os.close(password_descriptor)
             raise
-    if with_tribe:
+    if tribe_root is not None:
         from .matrix_host import _public_bundle, _standalone_tribe_authorities
 
         try:
             root = matrix_root(state, embodiment_id)
-            _standalone_tribe_authorities(root, _public_bundle(root, "runtime.json"))
+            tribe_root, _ = _standalone_tribe_authorities(root, tribe_root, _public_bundle(root, "runtime.json"))
         except Exception as exception:
             os.close(password_descriptor)
             raise RebirthHostError("rebirth_host_tribe_preflight_refused") from exception
@@ -676,8 +676,8 @@ def launch_rebirth_host(
                 command.append("--production-fence-verifier")
             if visibility_installation is not None:
                 command.extend(["--visibility-installation", str(visibility_installation)])
-            if with_tribe:
-                command.append("--with-tribe")
+            if tribe_root is not None:
+                command.extend(["--tribe-root", str(tribe_root)])
             body_parent: socket.socket | None = None
             body_child: socket.socket | None = None
             descriptors: tuple[int, ...] = (ready_write,)
@@ -841,7 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--native-source-profile", type=Path)
     parser.add_argument("--admission-client-config", type=Path)
     parser.add_argument("--visibility-installation", type=Path)
-    parser.add_argument("--with-tribe", action="store_true")
+    parser.add_argument("--tribe-root", type=Path)
     parser.add_argument("--recover-native-start")
     args = parser.parse_args(argv)
     try:
@@ -854,7 +854,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             native_source_profile=args.native_source_profile,
             admission_client_config=args.admission_client_config,
             visibility_installation=args.visibility_installation,
-            with_tribe=args.with_tribe,
+            tribe_root=args.tribe_root,
             recover_native_start=args.recover_native_start,
         )
         if args.ready_fd is not None:

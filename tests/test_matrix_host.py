@@ -803,3 +803,53 @@ def test_support_status_marks_explicit_synthetic_fixture_nonproduction(tmp_path)
             "interprocess_cas": False,
         },
     }
+
+
+def test_standalone_tribe_keeps_base_view_and_checks_signed_selector(monkeypatch, tmp_path):
+    from dataclasses import dataclass
+    from threading import Event
+
+    from daimon_matrix import chat_host
+    from clusterctl import matrix_host, onboarding_peer, onboarding_views
+
+    root = tmp_path / "runtime"
+    group = root / "tribe"
+    group.mkdir(parents=True, mode=0o700)
+    bundle = {"local_origin": "body"}
+    monkeypatch.setattr(onboarding_peer, "_group_selection_from_bundle", lambda *_: None)
+    with pytest.raises(MatrixHostError, match="matrix_tribe_selection_missing"):
+        matrix_host._standalone_tribe_authorities(root, bundle)
+
+    selected = {"directory": str(group / "application"),
+                "visibility": str(group / "visibility" / "installation.json"),
+                "socket": "tribe.sock"}
+    authorities = {"peer": object()}
+    monkeypatch.setattr(onboarding_peer, "_group_selection_from_bundle",
+                        lambda path, candidate: selected if (path, candidate) == (group, bundle) else None)
+    monkeypatch.setattr(onboarding_peer, "approved_group_authorities",
+                        lambda *args: authorities if args == (root, group, bundle) else {})
+    assert matrix_host._standalone_tribe_authorities(root, bundle) == (group, authorities)
+
+    @dataclass
+    class View:
+        state_root: Path
+        socket_path: Path
+
+    hosted = View(root, root / "matrix.sock")
+    stopped = Event()
+    calls = []
+    monkeypatch.setattr(onboarding_peer, "approved_group_application",
+                        lambda runtime, path: selected if (runtime, path) == (hosted, group) else None)
+
+    def application(runtime, directory, visibility):
+        assert runtime is hosted
+        assert directory == group / "application"
+        assert visibility == group / "visibility" / "installation.json"
+        return View(root, root / "other.sock")
+
+    monkeypatch.setattr(chat_host, "application_view", application)
+    monkeypatch.setattr(onboarding_views, "serve_views",
+                        lambda views, stop, **kwargs: calls.append((views, stop, kwargs)))
+    matrix_host._serve_standalone_tribe(hosted, group, stopped, 9)
+    assert calls == [([hosted, View(root, root / "tribe.sock")], stopped, {"ready_descriptor": 9})]
+    assert hosted.socket_path == root / "matrix.sock"

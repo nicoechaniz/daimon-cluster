@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -1375,6 +1375,35 @@ def _diagnostic(code: str) -> None:
     print(json.dumps(value, sort_keys=True, separators=(",", ":")), file=sys.stderr)
 
 
+def _standalone_tribe_authorities(root: Path, bundle: dict) -> tuple[Path, dict]:
+    """Resolve the approved group for this runtime, before opening private stores."""
+    from .onboarding_peer import (
+        _group_selection_from_bundle,
+        approved_group_authorities,
+    )
+
+    group_root = _owner_directory(root / "tribe")
+    selected = _group_selection_from_bundle(group_root, bundle)
+    if selected is None:
+        raise MatrixHostError("matrix_tribe_selection_missing")
+    return group_root, approved_group_authorities(root, group_root, bundle)
+
+
+def _serve_standalone_tribe(hosted, group_root: Path, stopping: threading.Event,
+                            ready_descriptor: int | None) -> None:
+    """Attach the signed group under the base runtime's single writer."""
+    from daimon_matrix.chat_host import application_view
+    from .onboarding_peer import approved_group_application
+    from .onboarding_views import serve_views
+
+    selected = approved_group_application(hosted, group_root)
+    if selected is None:
+        raise MatrixHostError("matrix_tribe_selection_missing")
+    group = application_view(hosted, Path(selected["directory"]), Path(selected["visibility"]))
+    group = replace(group, socket_path=hosted.state_root / selected["socket"])
+    serve_views([hosted, group], stopping, ready_descriptor=ready_descriptor)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
@@ -1385,6 +1414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--guardian-pid", type=int)
     parser.add_argument("--body-observer-fd", type=int)
     parser.add_argument("--visibility-installation", type=Path)
+    parser.add_argument("--with-tribe", action="store_true")
     parser.add_argument("--provision-visibility", action="store_true")
     parser.add_argument(
         "--production-fence-verifier",
@@ -1393,7 +1423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.provision_visibility and (
-        args.visibility_installation is not None or args.ready_fd is not None
+        args.visibility_installation is not None or args.ready_fd is not None or args.with_tribe
     ):
         _diagnostic("matrix_visibility_provision_never_serves")
         return 2
@@ -1493,6 +1523,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if path.exists():
                     controller._preflight_migration(path, catalog_id)
             visibility_options["egress"] = controller
+        group_root = None
+        if args.with_tribe:
+            group_root, authorities = _standalone_tribe_authorities(root, bundle)
+            visibility_options["relationship_authorities"] = authorities
         runtime = api["runtime"].load_runtime(
             root,
             args.bundle,
@@ -1516,9 +1550,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
-        api["daemon"].serve_forever(
-            runtime, stop=stopping, ready_descriptor=args.ready_fd
-        )
+        if group_root is not None:
+            _serve_standalone_tribe(runtime, group_root, stopping, args.ready_fd)
+        else:
+            api["daemon"].serve_forever(
+                runtime, stop=stopping, ready_descriptor=args.ready_fd
+            )
         return 0
     except Exception as exception:  # noqa: BLE001 - one closed process boundary
         code = exception.args[0] if exception.args else "matrix_host_startup_refused"

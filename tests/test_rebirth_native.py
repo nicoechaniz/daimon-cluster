@@ -383,6 +383,59 @@ def _next_sdk(intent, tag='d'):
     return result
 
 
+def test_adopt_source_for_completed_standalone_and_recover_unready_attempt(tmp_path):
+    from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT
+    from clusterctl.operation_journal import OperationJournal
+
+    journal = OperationJournal(tmp_path / 'state')
+    source = _startup_intent()
+    standalone = {**source, 'runtime_call': {
+        'operation': 'matrix-host', 'matrix_contract_commit': MATRIX_CONTRACT_COMMIT}}
+
+    def plan(intent, repair=None):
+        return rebirth_native.start_record(journal, 'target', intent, actor='fixture',
+            embodiment_id='body', recover_operation_id=repair)
+
+    original = plan(standalone)
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan(source)
+    original = journal.advance(original['operation_id'], 'completed')
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan({**source, 'successor_manifest_hash': 'another-manifest'})
+    promotion = plan(source)
+    assert promotion['intent']['native_start_predecessor']['operation_id'] == original['operation_id']
+    assert plan(source) == promotion
+    attempt = journal.advance(promotion['operation_id'], 'runtime-dispatching')
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan(standalone)
+    restored = plan(standalone, attempt['operation_id'])
+    assert restored['intent']['native_start_predecessor']['operation_id'] == original['operation_id']
+    assert restored['intent']['native_start_recovery']['operation_id'] == attempt['operation_id']
+    assert plan(standalone, attempt['operation_id']) == restored
+    assert journal.get(attempt['operation_id'])['state'] == 'compensated'
+    assert journal.get(original['operation_id']) == original
+
+
+def test_completed_source_adoption_cannot_restore_standalone_through_unready_recovery(tmp_path):
+    from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT
+    from clusterctl.operation_journal import OperationJournal
+
+    journal = OperationJournal(tmp_path / 'state')
+    source = _startup_intent()
+    standalone = {**source, 'runtime_call': {
+        'operation': 'matrix-host', 'matrix_contract_commit': MATRIX_CONTRACT_COMMIT}}
+
+    def plan(intent, repair=None):
+        return rebirth_native.start_record(journal, 'target', intent, actor='fixture',
+            embodiment_id='body', recover_operation_id=repair)
+
+    journal.advance(plan(standalone)['operation_id'], 'completed')
+    promotion = journal.advance(plan(source)['operation_id'], 'completed')
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan(standalone, promotion['operation_id'])
+    assert journal.latest_for_target('target') == promotion
+
+
 def test_native_sdk_plan_recovers_after_lost_return_without_competing_successor(tmp_path):
     from clusterctl.operation_journal import OperationJournal
 

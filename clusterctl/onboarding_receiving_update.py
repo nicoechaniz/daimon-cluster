@@ -2094,7 +2094,7 @@ def source_bootstrap_group(source, bundle: dict) -> dict:
     """Freeze the existing signed group selector and external publications."""
     from types import SimpleNamespace
     return bootstrap_group(SimpleNamespace(root=source.outputs, package=source.outputs),
-        bundle, socket_root=source.outputs)
+        bundle, socket_root=source.group_socket_root)
 
 
 def bootstrap_group(target, bundle: dict, *, socket_root: Path | None = None) -> dict:

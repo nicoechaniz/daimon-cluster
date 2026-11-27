@@ -28,6 +28,32 @@ def test_loaded_source_cli_requires_qualified_startup_before_owner_state(tmp_pat
     assert capsys.readouterr().out == '{"error": "native_onboarding_source_refused"}\n'
 
 
+@pytest.mark.parametrize('deadline', [None, 11_000_000_000])
+def test_source_cli_observation_passes_one_deadline_to_the_reader(tmp_path, monkeypatch, capsys, deadline):
+    from clusterctl import onboarding_source
+
+    now = 10_000_000_000
+    monkeypatch.setattr(onboarding_source.time, 'monotonic_ns', lambda: now)
+    config = tmp_path / 'source.json'
+    config.write_text('{}')
+
+    class ObservedSource:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def observe(self, *, require_loaded, deadline_ns):
+            assert not require_loaded
+            assert deadline_ns == deadline
+            return {'running': True}
+
+    monkeypatch.setattr(onboarding_source, 'Source', ObservedSource)
+    arguments = ['--config', str(config), '--observe']
+    if deadline is not None:
+        arguments.extend(['--observation-deadline-ns', str(deadline)])
+    assert onboarding_source.main(arguments) == 0
+    assert json.loads(capsys.readouterr().out) == {'running': True}
+
+
 def test_source_group_construction_does_not_invoke_unrelated_pair_ceremony(tmp_path, monkeypatch):
     root = tmp_path / 'runtime'
     root.mkdir(mode=0o700)
@@ -43,6 +69,40 @@ def test_source_group_construction_does_not_invoke_unrelated_pair_ceremony(tmp_p
     with pytest.raises(OnboardingError, match='qualified_native_peer_sdk_required'):
         source.tool
     assert calls == [True]  # Explicit ceremony still has the exact existing guard.
+
+
+@pytest.mark.parametrize('keep_runtime_socket', [False, True])
+def test_source_preserves_selected_group_socket_in_views_and_snapshot(tmp_path, monkeypatch, keep_runtime_socket):
+    from dataclasses import dataclass
+    from daimon_matrix import chat_host
+    from clusterctl import onboarding_receiving_update
+
+    root = tmp_path / 'runtime'
+    root.mkdir(mode=0o700)
+    output = tmp_path / 'outputs'
+    settings = dict(schema='cluster-onboarding-source/v1', runtime_root=str(root),
+        password_file=str(tmp_path / 'unused.unlock'), native_visibility=str(tmp_path / 'unused.json'),
+        outputs=str(output), applications=[])
+    if keep_runtime_socket:
+        settings['group_socket_at_runtime'] = True
+    source = Source(settings)
+    expected = root if keep_runtime_socket else output
+
+    @dataclass
+    class View:
+        socket_path: Path
+
+    base = View(root / 'matrix.sock')
+    selected = dict(directory=str(output / 'tribe/application'),
+        visibility=str(output / 'tribe/visibility/installation.json'), socket='tribe.sock')
+    monkeypatch.setattr(source, '_load', lambda *, signed: base)
+    monkeypatch.setattr(onboarding_peer, 'approved_group_application',
+        lambda hosted, group: selected if (hosted, group) == (base, output / 'tribe') else None)
+    monkeypatch.setattr(chat_host, 'application_view', lambda *_: View(output / 'unselected.sock'))
+    monkeypatch.setattr(onboarding_receiving_update, 'bootstrap_group',
+        lambda target, bundle, *, socket_root: (target.root, socket_root))
+    assert source.views() == [base, View(expected / 'tribe.sock')]
+    assert onboarding_receiving_update.source_bootstrap_group(source, {}) == (output, expected)
 
 
 def test_source_migration_cli_refuses_unqualified_code_before_owner_state(tmp_path, monkeypatch, capsys):

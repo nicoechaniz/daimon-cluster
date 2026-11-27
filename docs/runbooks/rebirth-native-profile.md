@@ -38,6 +38,12 @@ when the shared lease cannot be renewed. Readiness authenticates the loaded
 identity, manifest, physical root, actual spawned PID and selected SDK. A native
 profile does not synthesize a harness lifecycle card or claim a model turn.
 
+For a read-only loaded-view check, use the selected qualified Source CLI with
+`--observe --require-loaded`. It verifies both the running base and its loaded
+application with one deadline. Use `--observation-deadline-ns` to share the
+calling operation’s monotonic deadline. Use `--owner-status` when verifying
+that the active group reader is also under receiving control.
+
 Native visibility and resource grants remain those of the selected Source
 configuration. `--production-fence-verifier` and the ordinary profile's separate
 visibility option are rejected with this profile rather than silently ignored.

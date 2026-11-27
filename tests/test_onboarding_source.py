@@ -45,6 +45,40 @@ def test_source_group_construction_does_not_invoke_unrelated_pair_ceremony(tmp_p
     assert calls == [True]  # Explicit ceremony still has the exact existing guard.
 
 
+@pytest.mark.parametrize('keep_runtime_socket', [False, True])
+def test_source_preserves_selected_group_socket_in_views_and_snapshot(tmp_path, monkeypatch, keep_runtime_socket):
+    from dataclasses import dataclass
+    from daimon_matrix import chat_host
+    from clusterctl import onboarding_receiving_update
+
+    root = tmp_path / 'runtime'
+    root.mkdir(mode=0o700)
+    output = tmp_path / 'outputs'
+    settings = dict(schema='cluster-onboarding-source/v1', runtime_root=str(root),
+        password_file=str(tmp_path / 'unused.unlock'), native_visibility=str(tmp_path / 'unused.json'),
+        outputs=str(output), applications=[])
+    if keep_runtime_socket:
+        settings['group_socket_at_runtime'] = True
+    source = Source(settings)
+    expected = root if keep_runtime_socket else output
+
+    @dataclass
+    class View:
+        socket_path: Path
+
+    base = View(root / 'matrix.sock')
+    selected = dict(directory=str(output / 'tribe/application'),
+        visibility=str(output / 'tribe/visibility/installation.json'), socket='tribe.sock')
+    monkeypatch.setattr(source, '_load', lambda *, signed: base)
+    monkeypatch.setattr(onboarding_peer, 'approved_group_application',
+        lambda hosted, group: selected if (hosted, group) == (base, output / 'tribe') else None)
+    monkeypatch.setattr(chat_host, 'application_view', lambda *_: View(output / 'unselected.sock'))
+    monkeypatch.setattr(onboarding_receiving_update, 'bootstrap_group',
+        lambda target, bundle, *, socket_root: (target.root, socket_root))
+    assert source.views() == [base, View(expected / 'tribe.sock')]
+    assert onboarding_receiving_update.source_bootstrap_group(source, {}) == (output, expected)
+
+
 def test_source_migration_cli_refuses_unqualified_code_before_owner_state(tmp_path, monkeypatch, capsys):
     from clusterctl import onboarding_source
     monkeypatch.setattr(onboarding_source, 'Source', lambda *a, **k:

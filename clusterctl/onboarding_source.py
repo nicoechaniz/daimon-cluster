@@ -31,8 +31,9 @@ class Source:
     def __init__(self, settings: dict, *, code: Path | None = None, code_uid: int = 0,
                  code_digest: str | None = None, qualified_startup: dict | None = None,
                  body_reader: Callable | None = None):
-        if (not isinstance(settings, dict) or set(settings) - {'same_being_binding'} != {'schema', 'runtime_root', 'password_file',
+        if (not isinstance(settings, dict) or set(settings) - {'same_being_binding', 'group_socket_at_runtime'} != {'schema', 'runtime_root', 'password_file',
                 'native_visibility', 'outputs', 'applications'} or settings['schema'] != 'cluster-onboarding-source/v1'
+                or type(settings.get('group_socket_at_runtime', False)) is not bool
                 or any(not isinstance(settings[key], str) or not Path(settings[key]).is_absolute()
                        for key in ('runtime_root', 'password_file', 'native_visibility', 'outputs'))
                 or not isinstance(settings['applications'], list) or len(settings['applications']) > 16):
@@ -47,6 +48,7 @@ class Source:
         self.settings = settings
         self.root = private_directory(Path(settings['runtime_root']))
         self.outputs = private_directory(Path(settings['outputs']), create=True)
+        self.group_socket_root = self.root if settings.get('group_socket_at_runtime') else self.outputs
         self.visibility = Path(settings['native_visibility'])
         self.code = code or Path(__file__).resolve().parents[1]
         self.code_uid = code_uid
@@ -280,7 +282,7 @@ class Source:
         group = onboarding_peer.approved_group_application(base, self.outputs / 'tribe')
         if group is not None:
             view = application_view(base, Path(group['directory']), Path(group['visibility']))
-            return [base, replace(view, socket_path=self.outputs / group['socket'])]
+            return [base, replace(view, socket_path=self.group_socket_root / group['socket'])]
         seen = set()
         for fingerprint in self.settings['applications']:
             directory = self.directory(fingerprint)
@@ -426,7 +428,7 @@ class Source:
                 raise OnboardingError('onboarding_runtime_not_ready')
             bundle = document(self.root / 'runtime.json')
             group = onboarding_peer.observed_group(SimpleNamespace(root=self.outputs, package=self.outputs),
-                bundle, socket_root=self.outputs)
+                bundle, socket_root=self.group_socket_root)
             application_status = None
             if group is not None:
                 if observer is not None:

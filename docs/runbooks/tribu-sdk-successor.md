@@ -103,8 +103,9 @@ For an admitted native body, prepare the immutable replacement code/SDK, retaini
 the existing source config and SDK home, then select its protected native profile
 through scoped Matrix maintenance. The H8 host retains a new deterministic start
 linked to the completed predecessor. Exact retries resume that record; unfinished
-or degraded predecessors, changed identity/manifest/config/home and non-native
-transitions remain refused. The same singleton admission, registry, parent-death
+or degraded predecessors and changed identity/manifest/config/home remain
+refused. For a completed standalone start, use the scoped adoption below.
+The same singleton admission, registry, parent-death
 fencing and actual PID/SDK readiness checks still govern startup. The original
 start/audit remains intact; no re-enrollment, key, model or native-session change
 is implied. Published code and prepared SDKs are not receiving acceptance.
@@ -2470,9 +2471,12 @@ If another receiver requires a qualified reader proof, select the prepared
 `--native-source-profile` on the Rebirth launcher during a scoped transition.
 It must reference the same installed body and use its existing custody, native
 visibility and Source outputs. A completed standalone start is retained as the
-predecessor of the qualified Source start. Native Source hosts the group
-listener under the Source outputs directory. Confirm consumers use its actual
-socket and that the ordinary private listener also starts.
+predecessor of the qualified Source start. Set `group_socket_at_runtime: true`
+in the owner-private Source configuration when existing consumers already
+connect to the standalone runtime's `tribe.sock`. The signed selector and
+application remain in the Source outputs directory. Without this option,
+the listener stays in Source outputs. Confirm the ordinary private listener
+and the selected group listener both start.
 
 If the qualified start failed before recording a runtime or logical
 observation, the exact preceding standalone selection can be restarted using

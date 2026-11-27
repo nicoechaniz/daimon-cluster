@@ -778,7 +778,13 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
             target = 'native-profile:' + str(owner.path)
             prior = journal.latest_for_target(target)
             if prior is not None and prior['state'] != 'completed':
-                raise RebirthHostError('rebirth_host_native_profile_operation_required')
+                recovery = prior.get('result') or {}
+                if (prior['state'] != 'compensated'
+                        or recovery.get('schema') != 'cluster-h8-controller-pre-publication-recovery/v1'
+                        or recovery.get('publication_observed') is not False
+                        or recovery.get('process') != observed['process']
+                        or set(prior.get('runtime_observation') or {}) != {'stop_intent', 'quiesced'}):
+                    raise RebirthHostError('rebirth_host_native_profile_operation_required')
             row = journal.plan(operation='receiving-update',target=target,
                 idempotency_key='native-profile:'+spec['operation_id'],operation_id=spec['operation_id'],
                 intent=intent,expected_precondition=dict(native_profile=previous,receiving=observed,

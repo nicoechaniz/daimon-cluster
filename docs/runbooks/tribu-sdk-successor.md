@@ -2442,15 +2442,18 @@ redacted. Inspect the underlying category before retrying a publication phase.
 ### Standalone Matrix bodies
 
 Use the existing Source group owner writer for a standalone body. Bind the
-Source profile to that body's runtime and custody, with its outputs directory
-set to the same runtime root. Apply the already-authorized signed membership
-and the ordinary application, visibility and selection operations while the
-runtime writer is safely quiescent. The resulting selector must be at
-`tribe/selection.json` under that runtime. Another body's client, application or
-visibility installation cannot substitute for this body's own publication.
+Source profile to that body's runtime and custody. Select a separate, absolute,
+owner-private outputs directory outside the Matrix runtime. The native SDK
+requires the new group application to live outside the runtime tree. Apply the
+already-authorized membership and the ordinary application, visibility and
+selection operations while the runtime writer is safely quiescent. The
+resulting selector lives at `tribe/selection.json` inside the Source outputs.
+Another body's client, application or visibility installation cannot
+substitute for this body's own publication.
 
-After the signed group is prepared, explicitly select `--with-tribe` on the
-existing `clusterctl.rebirth_host` unit at a safe receiving transition.
+After the signed group is prepared, pass `--tribe-root` with the absolute path
+to the Source outputs' `tribe` directory on the existing
+`clusterctl.rebirth_host` unit at a safe receiving transition.
 The launcher verifies the signed selection before advancing start. The child
 checks it again under the same native writer lock, loads the selected
 relationship authorities, and adds the group view alongside the base view.

@@ -813,12 +813,18 @@ def test_standalone_tribe_keeps_base_view_and_checks_signed_selector(monkeypatch
     from clusterctl import matrix_host, onboarding_peer, onboarding_views
 
     root = tmp_path / "runtime"
-    group = root / "tribe"
+    group = tmp_path / "owner-output" / "tribe"
     group.mkdir(parents=True, mode=0o700)
+    nested = root / "tribe"
+    nested.mkdir(parents=True, mode=0o700)
     bundle = {"local_origin": "body"}
     monkeypatch.setattr(onboarding_peer, "_group_selection_from_bundle", lambda *_: None)
+    with pytest.raises(MatrixHostError, match="matrix_tribe_root_external_required"):
+        matrix_host._standalone_tribe_authorities(root, nested, bundle)
+    with pytest.raises(MatrixHostError, match="matrix_tribe_root_external_required"):
+        matrix_host._standalone_tribe_authorities(root, Path("tribe"), bundle)
     with pytest.raises(MatrixHostError, match="matrix_tribe_selection_missing"):
-        matrix_host._standalone_tribe_authorities(root, bundle)
+        matrix_host._standalone_tribe_authorities(root, group, bundle)
 
     selected = {"directory": str(group / "application"),
                 "visibility": str(group / "visibility" / "installation.json"),
@@ -828,7 +834,7 @@ def test_standalone_tribe_keeps_base_view_and_checks_signed_selector(monkeypatch
                         lambda path, candidate: selected if (path, candidate) == (group, bundle) else None)
     monkeypatch.setattr(onboarding_peer, "approved_group_authorities",
                         lambda *args: authorities if args == (root, group, bundle) else {})
-    assert matrix_host._standalone_tribe_authorities(root, bundle) == (group, authorities)
+    assert matrix_host._standalone_tribe_authorities(root, group, bundle) == (group, authorities)
 
     @dataclass
     class View:

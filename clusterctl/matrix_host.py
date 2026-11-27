@@ -1375,14 +1375,18 @@ def _diagnostic(code: str) -> None:
     print(json.dumps(value, sort_keys=True, separators=(",", ":")), file=sys.stderr)
 
 
-def _standalone_tribe_authorities(root: Path, bundle: dict) -> tuple[Path, dict]:
+def _standalone_tribe_authorities(root: Path, group_root: Path, bundle: dict) -> tuple[Path, dict]:
     """Resolve the approved group for this runtime, before opening private stores."""
     from .onboarding_peer import (
         _group_selection_from_bundle,
         approved_group_authorities,
     )
 
-    group_root = _owner_directory(root / "tribe")
+    if not group_root.is_absolute():
+        raise MatrixHostError("matrix_tribe_root_external_required")
+    group_root = _owner_directory(group_root)
+    if group_root.is_relative_to(root) or root.is_relative_to(group_root):
+        raise MatrixHostError("matrix_tribe_root_external_required")
     selected = _group_selection_from_bundle(group_root, bundle)
     if selected is None:
         raise MatrixHostError("matrix_tribe_selection_missing")
@@ -1414,7 +1418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--guardian-pid", type=int)
     parser.add_argument("--body-observer-fd", type=int)
     parser.add_argument("--visibility-installation", type=Path)
-    parser.add_argument("--with-tribe", action="store_true")
+    parser.add_argument("--tribe-root", type=Path)
     parser.add_argument("--provision-visibility", action="store_true")
     parser.add_argument(
         "--production-fence-verifier",
@@ -1423,7 +1427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.provision_visibility and (
-        args.visibility_installation is not None or args.ready_fd is not None or args.with_tribe
+        args.visibility_installation is not None or args.ready_fd is not None or args.tribe_root is not None
     ):
         _diagnostic("matrix_visibility_provision_never_serves")
         return 2
@@ -1524,8 +1528,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     controller._preflight_migration(path, catalog_id)
             visibility_options["egress"] = controller
         group_root = None
-        if args.with_tribe:
-            group_root, authorities = _standalone_tribe_authorities(root, bundle)
+        if args.tribe_root is not None:
+            group_root, authorities = _standalone_tribe_authorities(root, args.tribe_root, bundle)
             visibility_options["relationship_authorities"] = authorities
         runtime = api["runtime"].load_runtime(
             root,

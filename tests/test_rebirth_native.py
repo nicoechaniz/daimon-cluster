@@ -673,7 +673,7 @@ def test_native_profile_selection_recovers_replace_before_ack_without_replacemen
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "migration", "start-active", "start-inactive", "status-pending"]
+    "failure", [None, "migration", "start-active", "start-inactive", "status-pending", "controller", "controller-lost"]
 )
 def test_native_profile_maintenance_resumes_real_journal_without_replaying_start(
     tmp_path, monkeypatch, failure
@@ -688,10 +688,11 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
         code="/code/old",
         code_digest="a" * 64,
     )
-    candidate = {**previous, "code": "/code/new", "code_digest": "b" * 64}
+    issue_controller = failure in {"controller", "controller-lost"}
+    candidate = previous if issue_controller else {**previous, "code": "/code/new", "code_digest": "b" * 64}
     child = dict(pid=123, uid=os.geteuid(), start_ticks=1, boot_id="fixture")
     parent = {**child, "pid": 124}
-    prior_status = dict(loaded_runtime={'runtime_bundle_sha256':'d'*64},
+    prior_status = dict(local_origin={"fixture": "same origin"}, loaded_runtime={'runtime_bundle_sha256':'d'*64},
         loaded_application=dict(application_sha256='e'*64,publication_sha256='f'*64,
             visibility={'installation_sha256':'1'*64}))
     receiving = dict(process=child,server={"fixture":"same origin"},runtime_status=prior_status)
@@ -772,6 +773,21 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
                 raise OSError("lost migration acknowledgement")
             return {"catalog_schema_version": 2}
 
+        def issue_controller(self, helper, spec, **_):
+            assert helper == {"fixture": "helper"} and not manager.active
+            current = journal.get(row["operation_id"])
+            effects = current["runtime_observation"]
+            if "capability_published" not in effects:
+                calls.append("issue")
+                published = dict(runtime_sha256="2" * 64)
+                journal.advance(row["operation_id"], current["state"],
+                    runtime_observation={**effects, "capability_published": published,
+                        "visibility_published": published}, expected_runtime_observation=effects)
+                if failure == "controller-lost":
+                    raise OSError("lost controller publication acknowledgement")
+                return published
+            return effects["capability_published"]
+
         def select(self, value, **_):
             calls.append("select")
             self.value = value
@@ -785,11 +801,13 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
             return dict(
                 process={**child, "pid": 456},
                 server=receiving["server"],
+                gate={"controlled": True},
                 runtime_status={
                     **prior_status,
                     "loaded_runtime": {
                         **prior_status['loaded_runtime'],
-                        "qualified_startup": {"code_digest": candidate["code_digest"]}
+                        "qualified_startup": {"code_digest": candidate["code_digest"]},
+                        "runtime_bundle_sha256": "2" * 64 if issue_controller else "d" * 64
                     }
                 },
             )
@@ -800,12 +818,14 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
         operation="receiving-update",
         target="native-profile:fixture",
         idempotency_key="fixture",
-        intent={},
+        intent={"native_profile_maintenance": {"controller_helper": {"fixture": "helper"}}}
+            if issue_controller else {},
         expected_precondition=dict(
             native_profile=previous,
             receiving=receiving,
             service=manager.inspect(),
             scope=scope,
+            **({"controller_issuance": {}} if issue_controller else {}),
         ),
         intended_transition=dict(native_profile=candidate),
         audit_identity={"actor": "test"},
@@ -813,7 +833,7 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
     controller = rebirth_native.ProfileMaintenance(
         journal, row["operation_id"], owner, manager, candidate
     )
-    if failure in {"migration", "start-active", "start-inactive"}:
+    if failure in {"migration", "start-active", "start-inactive", "controller-lost"}:
         with pytest.raises(OSError):
             controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)
         if failure == "start-inactive":
@@ -826,8 +846,13 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
             return
     result = controller.run(deadline_ns=time.monotonic_ns() + 180_000_000_000)
     assert result["complete"] and result["receiving_readiness"] == "unobserved"
-    assert calls.count("stop") == calls.count("start") == calls.count("select") == 1
-    assert calls.index("migrate") < calls.index("select") < calls.index("start")
+    assert calls.count("stop") == calls.count("start") == 1
+    if issue_controller:
+        assert result["controller_loaded"]
+        assert calls == ["stop", "issue", "start", "status"]
+    else:
+        assert calls.count("select") == 1
+        assert calls.index("migrate") < calls.index("select") < calls.index("start")
     assert journal.get(row["operation_id"])["state"] == "completed"
     previous_calls = list(calls)
     assert controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)[

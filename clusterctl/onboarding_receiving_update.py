@@ -2749,6 +2749,96 @@ def publish_source_capability(source, frozen: dict, candidate: dict, *,
     return published
 
 
+def prepare_h8_controller(source, observed: dict, *, expires_at_ms: int) -> dict:
+    """Freeze an already loaded H8 body before first controller issuance."""
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+
+    bundle = being_seed._read(source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+    fingerprint = digest(bundle)
+    runtime = observed['runtime_status']
+    if (observed.get('responder_association') != 'same-connection'
+            or runtime['local_origin'] != bundle['local_origin']
+            or runtime['loaded_runtime']['runtime_bundle_sha256'] != fingerprint
+            or controller_preservation(source.root, bundle) is not None):
+        raise OnboardingError('receiving_bootstrap_identity_conflict')
+    upgrade._forward_authorization(bundle, expires_at_ms)
+    group = source_bootstrap_group(source, bundle)
+    if group['selected'] != observed['group']:
+        raise OnboardingError('receiving_bootstrap_group_changed')
+    visibility = onboarding_release.regular(source.visibility, uid=os.geteuid())
+    return dict(mode='issue', bundle_sha256=fingerprint, group=group,
+        settings_sha256=digest(source.settings), visibility_envelope=json.loads(visibility),
+        visibility_sha256=hashlib.sha256(visibility).hexdigest())
+
+
+def publish_h8_controller(source, journal, operation_id: str, manager, *, deadline_ns: int) -> dict:
+    """Issue from the H8 operation's retained and observed stopped state."""
+    from daimon_matrix.daemon import _prepare_socket
+    from .owner_process import observe_process_exit
+
+    row = journal.get(operation_id)
+    if row is None or row['operation'] != 'receiving-update' or row['state'] != 'runtime-dispatching':
+        raise OnboardingError('receiving_bootstrap_operation_required')
+    before = row['expected_precondition']
+    frozen = before['controller_issuance']
+    scope, service = before['scope'], before['service']
+    request = row['intent']['native_profile_maintenance']
+    transaction = source.root.parent / ('.h8-controller-' + operation_id)
+    if (request.get('unit') != str(manager.unit) or frozen['mode'] != 'issue'
+            or frozen['settings_sha256'] != digest(source.settings)):
+        raise OnboardingError('receiving_bootstrap_binding_conflict')
+
+    def effects():
+        return journal.get(operation_id)['runtime_observation'] or {}
+
+    def record(key, value):
+        previous = effects()
+        if key in previous:
+            if previous[key] != value:
+                raise OnboardingError('receiving_bootstrap_observation_conflict')
+            return
+        journal.advance(operation_id, 'runtime-dispatching',
+            runtime_observation={**previous, key: value}, expected_runtime_observation=previous)
+
+    def require_quiescence():
+        observed = effects().get('quiesced') or {}
+        if (observed.get('exit_observed') is not True
+                or any(observed.get(key) != scope[key] or not observe_process_exit(scope[key])
+                    for key in ('process', 'admission_parent'))):
+            raise OnboardingError('receiving_bootstrap_exit_unobserved')
+        current = manager.inspect(deadline_ns=deadline_ns)
+        values = current['manager']
+        if (current['unit_sha256'] != service['unit_sha256']
+                or current.get('dropins', {}) != service.get('dropins', {})
+                or values['ActiveState'] != 'inactive' or values['MainPID'] != '0'
+                or values['InvocationID'] not in ('', scope['invocation_id'])):
+            raise OnboardingError('receiving_bootstrap_quiescence_required')
+
+    def recover(upgrade, transaction, intent, _frozen, _candidate):
+        recover_capability_stage(upgrade, runtime_root=source.root, transaction=transaction,
+            source_sha256=intent['source_sha256'], operation_id=operation_id, observe=effects,
+            record=record, quiescence=require_quiescence)
+
+    def publish_visibility(upgrade, frozen, transaction):
+        return publish_source_visibility(source, upgrade, frozen, transaction,
+            operation_id=operation_id, effects=effects, record=record)
+
+    require_quiescence()
+    group = source_bootstrap_group(source, being_seed._read(
+        source.root / 'runtime.json', limit=being_seed.MAX_SELECTION))
+    if group != frozen['group']:
+        raise OnboardingError('receiving_bootstrap_group_changed')
+    with source.writer():
+        require_quiescence()
+        _prepare_socket(source.root / 'matrix.sock')
+        if source.settings.get('group_socket_at_runtime') is True:
+            _prepare_socket(source.root / 'tribe.sock')
+    return publish_source_capability(source, frozen,
+        dict(transaction=str(transaction), expires_at_ms=request['controller_expires_at_ms']),
+        effects=effects, record=record, require_quiescence=require_quiescence,
+        recover_stage=recover, publish_visibility=publish_visibility)
+
+
 class SourceBootstrapController:
     """Journaled first controlled adoption through the existing Source owner.
 

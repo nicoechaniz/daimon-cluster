@@ -89,6 +89,18 @@ root-managed command. The user unit's fragment and drop-ins must belong to
 the same owner. The check ties the authenticated child to that unit's actual
 admission supervisor.
 
+To provision the first receiving controller on an already loaded owner-local
+profile, keep `candidate` equal to the active profile and add
+`controller_helper` (an immutable helper profile with the same SDK, config,
+and home) and `controller_expires_at_ms` (the Matrix issuance horizon).
+Run the same command with `--check-only` before applying. The operation pins
+the child and admission supervisor, preserves the signed group selection, and
+uses the native capability and visibility writers while those processes are
+observably stopped. It restarts the same supervisor and requires authenticated
+readback of the new controller. Retain the original spec and journal after an
+interrupted acknowledgment. A loaded controller does not prove a message or
+model turn.
+
 The command qualifies the successor reader against the serving body, binds its
 actual admission parent to the selected system unit, retains the operation, stops
 that Matrix unit, migrates through the successor SDK, selects the canonical

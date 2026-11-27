@@ -650,6 +650,7 @@ def main(argv=None) -> int:
     control.add_argument('--prepare-apply-control', type=Path)
     parser.add_argument('--control-command', type=Path)
     parser.add_argument('--owner-status', action='store_true')
+    parser.add_argument('--h8-controller', choices=('prepare', 'publish'))
     parser.add_argument('--owner-base-status', action='store_true')
     parser.add_argument('--qualified-identity', action='store_true')
     parser.add_argument('--identity-expires-at-ms', type=int)
@@ -706,21 +707,22 @@ def main(argv=None) -> int:
         if args.native_tooling_json is not None and (not args.qualified_identity
                 or len(args.native_tooling_json.encode()) > 65536):
             raise OnboardingError('receiving_native_tooling_recipe_required')
-        receiving = args.owner_status or args.owner_base_status or args.qualified_identity or controlling or lifecycle or grouping or preparing or migrating
-        if (sum((args.observe, args.owner_status, args.owner_base_status, args.qualified_identity, controlling, lifecycle, grouping, preparing, migrating)) > 1
+        h8_controller = args.h8_controller is not None
+        receiving = h8_controller or args.owner_status or args.owner_base_status or args.qualified_identity or controlling or lifecycle or grouping or preparing or migrating
+        if (sum((h8_controller, args.observe, args.owner_status, args.owner_base_status, args.qualified_identity, controlling, lifecycle, grouping, preparing, migrating)) > 1
                 or (lifecycle or preparing or args.group_session) != (args.operation_journal is not None)
                 or args.group_session and (not grouping or args.group_request != Path('-'))
                 or args.lifecycle_action is not None and not lifecycle
                 or args.admission_continuation is not None and (
                     not lifecycle or args.lifecycle_action != 'start' or args.admission_continuation != Path('-'))
-                or (lifecycle or preparing) and (args.ready_fd is not None or args.require_loaded)
+                or (lifecycle or preparing or h8_controller) and (args.ready_fd is not None or args.require_loaded)
                 or migrating and (args.ready_fd is not None or args.require_loaded)
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
                 or args.identity_expires_at_ms is not None and not 0 < args.identity_expires_at_ms < 2**53
                 or (args.owner_status or args.owner_base_status or args.qualified_identity or grouping) and (args.ready_fd is not None or args.require_loaded)
                 or args.observation_deadline_ns is not None and not (receiving or args.observe)):
             raise OnboardingError('invalid_receiving_control_request')
-        if (args.require_loaded or args.owner_status or args.owner_base_status or args.qualified_identity
+        if (h8_controller or args.require_loaded or args.owner_status or args.owner_base_status or args.qualified_identity
                 or lifecycle or grouping or preparing or migrating) and args.observation_deadline_ns is None:
             args.observation_deadline_ns = time.monotonic_ns() + 30_000_000_000
         def accept_deadline():
@@ -760,6 +762,34 @@ def main(argv=None) -> int:
         accept_deadline()
         source = Source(settings, code=code, code_uid=args.code_owner, code_digest=args.code_digest,
                         qualified_startup=startup, body_reader=body_reader)
+        if h8_controller:
+            from .onboarding_receiving_update import prepare_h8_controller, publish_h8_controller
+            raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
+            if len(raw) > being_seed.MAX_SELECTION:
+                raise OnboardingError('receiving_bootstrap_operation_required')
+            request = json.loads(raw)
+            deadline = args.observation_deadline_ns
+            if args.h8_controller == 'prepare':
+                observed = source.observe(require_loaded=True, deadline_ns=deadline)
+                if observed['process'] != request['process']:
+                    raise OnboardingError('receiving_source_process_changed')
+                result = prepare_h8_controller(source, observed, expires_at_ms=request['expires_at_ms'])
+            else:
+                import grp
+                import pwd
+                from .onboarding_service import MatrixProfileService
+                from .operation_journal import OperationJournal
+                journal = OperationJournal.existing(Path(request['journal']))
+                if journal is None:
+                    raise OnboardingError('receiving_bootstrap_operation_required')
+                unit = Path(request['unit'])
+                manager = MatrixProfileService(unit, user=pwd.getpwuid(os.geteuid()).pw_name,
+                    group=grp.getgrgid(os.getegid()).gr_name, manager='user')
+                result = publish_h8_controller(source, journal, request['operation_id'], manager,
+                    deadline_ns=deadline)
+            accept_deadline()
+            print(json.dumps(result))
+            return 0
         if migrating:
             if args.visibility_migration == Path('-'):
                 raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)

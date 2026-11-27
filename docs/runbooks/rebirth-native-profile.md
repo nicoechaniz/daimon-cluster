@@ -81,6 +81,14 @@ profile document above), `unit`, `journal` and `max_seconds` (1–180). The sele
 SDK/import generation must already be prepared. The service's existing owner is
 resolved from the private profile; no login, account or unit directive is changed.
 
+The default manager is the system manager. For an existing Matrix-only
+systemd user service, add `"manager": "user"` to the receiving owner's own
+mode-0600 spec and run the command as that same non-root owner. This scope
+supports the local profile operation; fleet reader completion uses the
+root-managed command. The user unit's fragment and drop-ins must belong to
+the same owner. The check ties the authenticated child to that unit's actual
+admission supervisor.
+
 The command qualifies the successor reader against the serving body, binds its
 actual admission parent to the selected system unit, retains the operation, stops
 that Matrix unit, migrates through the successor SDK, selects the canonical

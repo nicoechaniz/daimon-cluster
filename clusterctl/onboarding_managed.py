@@ -1682,10 +1682,13 @@ def main(argv=None) -> int:
         help='Inspect desired/loaded native code and retained operations without lifecycle effects')
     args = parser.parse_args(argv)
     try:
-        if os.geteuid() != 0:
-            raise OnboardingError('native_code_maintenance_root_required')
         spec = being_seed._read(args.spec, limit=65536)
-        if spec.get('schema') == 'cluster-native-profile-maintenance/v1':
+        native_profile = spec.get('schema') == 'cluster-native-profile-maintenance/v1'
+        if os.geteuid() != 0 and not (
+                native_profile and spec.get('manager') == 'user'
+                and spec.get('reader_completion') is None):
+            raise OnboardingError('native_code_maintenance_root_required')
+        if native_profile:
             result = run_native_profile_update(spec,check_only=args.check_only)
         else:
             result = run_code_status(spec) if args.check_only else run_code_update(spec)

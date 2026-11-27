@@ -2613,6 +2613,264 @@ class GuestOwnerBootstrap:
                 return self._group_context_transition(upgrade, result, deadline_ns=deadline_ns)
 
 
+def source_visibility_bytes(source, frozen: dict, observations: dict) -> bytes:
+    raw = onboarding_release.regular(source.visibility, uid=os.geteuid())
+    actual = hashlib.sha256(raw).hexdigest()
+    intended = observations.get('visibility_intent', {}).get('installation_sha256')
+    if actual not in {frozen['visibility_sha256'], intended}:
+        raise OnboardingError('receiving_bootstrap_visibility_changed')
+    return raw
+
+
+def publish_source_visibility(source, upgrade, frozen: dict, transaction: Path, *,
+                              operation_id: str, effects, record) -> dict:
+    """Derive through the owning signer, then journal an exact envelope CAS."""
+    from daimon_matrix.canonical import canonical_bytes
+    from daimon_matrix.operator_messaging import _reissue_installation
+    from .onboarding_service import publish
+    observations = effects()
+    with source.writer():
+        source_visibility_bytes(source, frozen, observations)
+        intended = observations.get('visibility_intent')
+        if intended is None:
+            current = source._load(signed=False)
+            bundle = being_seed._read(source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+            # Only an isolated unpublished copy is passed to the existing
+            # reissue helper. Its source is the exact frozen envelope; all
+            # local/foreign attestation rules remain owned by Matrix.
+            with tempfile.TemporaryDirectory(prefix='.visibility-', dir=transaction) as scratch:
+                copy = Path(scratch) / 'installation.json'
+                publish(copy, canonical_bytes(frozen['visibility_envelope']))
+                _reissue_installation(current, copy, application_sha256=digest(bundle))
+                envelope = being_seed._read(copy, limit=being_seed.MAX_SELECTION)
+            raw = canonical_bytes(envelope)
+            intended = dict(envelope=envelope, installation_sha256=hashlib.sha256(raw).hexdigest(),
+                runtime_sha256=hashlib.sha256(canonical_bytes(bundle)).hexdigest())
+            record('visibility_intent', intended)
+        raw = canonical_bytes(intended['envelope'])
+        if hashlib.sha256(raw).hexdigest() != intended['installation_sha256']:
+            raise OnboardingError('receiving_bootstrap_binding_conflict')
+        observations = effects()
+        actual = source_visibility_bytes(source, frozen, observations)
+        if actual != raw:
+            previous = source.visibility.with_name(source.visibility.name + '.' + frozen['visibility_sha256'] + '.previous')
+            publish(previous, actual)
+            temporary = source.visibility.with_name('.bootstrap-' + operation_id + '.json')
+            publish(temporary, raw)
+            if source_visibility_bytes(source, frozen, observations) != actual:
+                raise OnboardingError('receiving_bootstrap_visibility_changed')
+            os.replace(temporary, source.visibility)
+        descriptor = os.open(source.visibility, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        upgrade._sync(source.visibility.parent)
+        source._load(signed=True).egress.validate_registered_catalogs()
+    return {key: intended[key] for key in ('installation_sha256', 'runtime_sha256')}
+
+
+def publish_source_capability(source, frozen: dict, candidate: dict, *,
+                              effects, record, require_quiescence, recover_stage,
+                              publish_visibility) -> dict:
+    """Publish the exact native successor under the caller's stopped-writer proof."""
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+
+    require_quiescence()
+    observations = effects()
+    password = bytes(source._reader())
+    transaction = Path(candidate['transaction'])
+    ready_path = transaction / 'ready.json'
+    try:
+        ready_document = json.loads(onboarding_release.regular(ready_path, uid=os.geteuid()))
+        complete = isinstance(ready_document, dict) and ready_document.get('schema') == 'dm.operator.capability-upgrade/v1'
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        complete = False
+    if not complete:
+        bundle = being_seed._read(source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+        if digest(bundle) != frozen['bundle_sha256']:
+            raise OnboardingError('receiving_bootstrap_identity_conflict')
+        intent = dict(source_sha256=upgrade.inventory_digest(source.root),
+            counter=bundle['keystore']['counter'], control_head=bundle['control_head'],
+            being_ref=bundle['manifest']['being_ref'], origin=bundle['local_origin'])
+        if frozen.get('mode') == 'renew':
+            if controller_preservation(source.root, bundle) != frozen['preservation']:
+                raise OnboardingError('receiving_controller_preservation_changed')
+            renewal_authorization(bundle, candidate['expires_at_ms'])
+        retained_intent = observations.get('capability_intent', intent)
+        if retained_intent != intent:
+            raise OnboardingError('receiving_bootstrap_source_changed')
+        record('capability_intent', intent)
+        stage_intent = observations.get('capability_stage_intent')
+        if stage_intent is None:
+            if transaction.exists() or transaction.is_symlink():
+                raise OnboardingError('receiving_bootstrap_unowned_stage')
+            record('capability_stage_intent', dict(transaction=str(transaction)))
+        elif stage_intent != dict(transaction=str(transaction)):
+            raise OnboardingError('receiving_bootstrap_binding_conflict')
+        recover_stage(upgrade, transaction, intent, frozen, candidate)
+        require_quiescence()
+        upgrade.stage_capabilities(source=source.root, transaction=transaction,
+            expected_source_sha256=intent['source_sha256'], expected_counter=intent['counter'],
+            expected_control_head=intent['control_head'], expected_being_ref=intent['being_ref'],
+            expected_origin=intent['origin'], add_methods=frozen.get('capability_additions', {}),
+            **source_stage_options(frozen), expires_at_ms=candidate['expires_at_ms'], password=password, externally_quiesced=True)
+    ready = onboarding_release.regular(ready_path, uid=os.geteuid())
+    receipt = json.loads(ready)
+    intent = effects()['capability_intent']
+    if (receipt.get('source_sha256') != intent['source_sha256']
+            or receipt.get('origin') != intent['origin'] or receipt.get('control_head') != intent['control_head']
+            or not source_stage_matches(receipt, frozen) or receipt.get('expires_at_ms') != candidate['expires_at_ms']):
+        raise OnboardingError('receiving_bootstrap_binding_conflict')
+    ready_hash = hashlib.sha256(ready).hexdigest()
+    descriptor = os.open(ready_path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    upgrade._sync(transaction)
+    record('capability_ready', dict(ready_sha256=ready_hash))
+    require_quiescence()
+    # After a lost publication ACK the native helper resolves the same
+    # atomic exchange. Never restage or restore its old checkpoint.
+    published = observations.get('capability_published')
+    if published is None:
+        publication = upgrade.publish(source=source.root, transaction=transaction,
+            expected_receipt_sha256=ready_hash, password=password, externally_quiesced=True,
+            capability_upgrade=True)
+        published = dict(publication=publication, runtime_sha256=hashlib.sha256(
+            onboarding_release.regular(source.root / 'runtime.json', uid=os.geteuid())).hexdigest())
+        record('capability_published', published)
+    if hashlib.sha256(onboarding_release.regular(source.root / 'runtime.json', uid=os.geteuid())).hexdigest() != published['runtime_sha256']:
+        raise OnboardingError('receiving_bootstrap_source_changed')
+    require_quiescence()
+    record('visibility_published', publish_visibility(upgrade, frozen, transaction))
+    require_quiescence()
+    return published
+
+
+def prepare_h8_controller(source, observed: dict, *, expires_at_ms: int) -> dict:
+    """Freeze an already loaded H8 body before first controller issuance."""
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+
+    bundle = being_seed._read(source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+    fingerprint = digest(bundle)
+    runtime = observed['runtime_status']
+    if (observed.get('responder_association') != 'same-connection'
+            or runtime['local_origin'] != bundle['local_origin']
+            or runtime['loaded_runtime']['runtime_bundle_sha256'] != fingerprint
+            or controller_preservation(source.root, bundle) is not None):
+        raise OnboardingError('receiving_bootstrap_identity_conflict')
+    upgrade._forward_authorization(bundle, expires_at_ms)
+    group = source_bootstrap_group(source, bundle)
+    if group['selected'] != observed['group']:
+        raise OnboardingError('receiving_bootstrap_group_changed')
+    visibility = onboarding_release.regular(source.visibility, uid=os.geteuid())
+    return dict(mode='issue', bundle_sha256=fingerprint, group=group,
+        settings_sha256=digest(source.settings), visibility_envelope=json.loads(visibility),
+        visibility_sha256=hashlib.sha256(visibility).hexdigest())
+
+
+def h8_controller_publication_id(operation_id: str) -> str:
+    return str(uuid.uuid5(uuid.UUID(operation_id), 'h8-receiving-controller-publication'))
+
+
+def publish_h8_controller(source, journal, operation_id: str, manager, *, deadline_ns: int) -> dict:
+    """Issue from the H8 operation's retained and observed stopped state."""
+    from daimon_matrix.daemon import _prepare_socket
+    from daimon_matrix.keystore import _exclusive
+    from .owner_process import observe_process_exit
+
+    row = journal.get(operation_id)
+    if row is None or row['operation'] != 'receiving-update' or row['state'] != 'runtime-dispatching':
+        raise OnboardingError('receiving_bootstrap_operation_required')
+    before = row['expected_precondition']
+    frozen = before['controller_issuance']
+    scope, service = before['scope'], before['service']
+    request = row['intent']['native_profile_maintenance']
+    transaction = source.root.parent / ('.h8-controller-' + operation_id)
+    if (request.get('unit') != str(manager.unit) or frozen['mode'] != 'issue'
+            or frozen['settings_sha256'] != digest(source.settings)):
+        raise OnboardingError('receiving_bootstrap_binding_conflict')
+
+    publication_id = h8_controller_publication_id(operation_id)
+
+    def effects():
+        return journal.get(publication_id)['runtime_observation'] or {}
+
+    def record(key, value):
+        previous = journal.get(publication_id)['runtime_observation']
+        if key in (previous or {}):
+            if previous[key] != value:
+                raise OnboardingError('receiving_bootstrap_observation_conflict')
+            return
+        journal.advance(publication_id, 'runtime-dispatching',
+            runtime_observation={**(previous or {}), key: value}, expected_runtime_observation=previous)
+
+    def require_quiescence():
+        lifecycle = journal.get(operation_id)
+        if lifecycle['state'] != 'runtime-dispatching':
+            raise OnboardingError('receiving_bootstrap_operation_required')
+        observed = (lifecycle['runtime_observation'] or {}).get('quiesced') or {}
+        if (observed.get('exit_observed') is not True
+                or any(observed.get(key) != scope[key] or not observe_process_exit(scope[key])
+                    for key in ('process', 'admission_parent'))):
+            raise OnboardingError('receiving_bootstrap_exit_unobserved')
+        current = manager.inspect(deadline_ns=deadline_ns)
+        values = current['manager']
+        if (current['unit_sha256'] != service['unit_sha256']
+                or current.get('dropins', {}) != service.get('dropins', {})
+                or values['ActiveState'] != 'inactive' or values['MainPID'] != '0'
+                or values['InvocationID'] not in ('', scope['invocation_id'])):
+            raise OnboardingError('receiving_bootstrap_quiescence_required')
+
+    def recover(upgrade, transaction, intent, _frozen, _candidate):
+        recover_capability_stage(upgrade, runtime_root=source.root, transaction=transaction,
+            source_sha256=intent['source_sha256'], operation_id=operation_id, observe=effects,
+            record=record, quiescence=require_quiescence)
+
+    def publish_visibility(upgrade, frozen, transaction):
+        return publish_source_visibility(source, upgrade, frozen, transaction,
+            operation_id=operation_id, effects=effects, record=record)
+
+    # The lifecycle owns its own operation throughout the subprocess call.
+    # The signer records a distinct effect in the same journal.
+    with journal.mutation_lock(publication_id):
+        require_quiescence()
+        effect = journal.get(publication_id)
+        if effect is None:
+            effect = journal.plan(operation='receiving-update', operation_id=publication_id,
+                target='h8-controller-publication:' + operation_id, idempotency_key=publication_id,
+                intent=dict(lifecycle=operation_id, lifecycle_intent_sha256=row['intent_hash']),
+                expected_precondition=frozen, intended_transition={'controller': 'issue'},
+                audit_identity={'actor': 'native-h8-controller-owner'})
+        if effect['intent'].get('lifecycle_intent_sha256') != row['intent_hash']:
+            raise OnboardingError('receiving_bootstrap_binding_conflict')
+        group = source_bootstrap_group(source, being_seed._read(
+            source.root / 'runtime.json', limit=being_seed.MAX_SELECTION))
+        if group != frozen['group']:
+            raise OnboardingError('receiving_bootstrap_group_changed')
+        if effect['state'] == 'completed':
+            return effect['result']
+        if effect['state'] == 'planned':
+            journal.advance(publication_id, 'runtime-dispatching')
+        with source.writer():
+            require_quiescence()
+            _prepare_socket(source.root / 'matrix.sock')
+            if source.settings.get('group_socket_at_runtime') is True:
+                _prepare_socket(source.root / 'tribe.sock')
+            # Include the native custody lock in the pre-rotation inventory,
+            # including on runtimes installed without an earlier rotation.
+            with _exclusive(source.root / 'custody.json'):
+                pass
+        published = publish_source_capability(source, frozen,
+            dict(transaction=str(transaction), expires_at_ms=request['controller_expires_at_ms']),
+            effects=effects, record=record, require_quiescence=require_quiescence,
+            recover_stage=recover, publish_visibility=publish_visibility)
+        journal.advance(publication_id, 'completed', result=published)
+        return published
+
+
 class SourceBootstrapController:
     """Journaled first controlled adoption through the existing Source owner.
 
@@ -2812,10 +3070,11 @@ class SourceBootstrapController:
         from daimon_matrix.daemon import _prepare_socket
         with self.source.writer():
             self._budget(deadline_ns)
-            # Supported stale-socket checks are safe only after exact process
-            # exit and stopped-manager proof. A forced exit may leave this
-            # ephemeral socket, which cannot be copied as a runtime artifact.
+            # Exact exit and stopped-manager proof precede this writer. A
+            # forced exit can leave ephemeral endpoints in the runtime tree.
             _prepare_socket(self.source.root / 'matrix.sock')
+            if self.source.settings.get('group_socket_at_runtime') is True:
+                _prepare_socket(self.source.root / 'tribe.sock')
 
     def observe_quiescence(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
         """Fresh stopped-unit and exact-exit evidence; never dispatch StopUnit."""
@@ -2844,13 +3103,11 @@ class SourceBootstrapController:
                     exit_sha256=digest(retained), service=inspected, observed_at_ns=time.monotonic_ns(),
                     receiving_readiness='unobserved')
 
+    def _publication_effects(self) -> dict:
+        return (self._row()[0]['runtime_observation'] or {}).get('source_bootstrap', {})
+
     def _visibility_current(self, frozen: dict, observations: dict) -> bytes:
-        raw = onboarding_release.regular(self.source.visibility, uid=os.geteuid())
-        actual = hashlib.sha256(raw).hexdigest()
-        intended = observations.get('visibility_intent', {}).get('installation_sha256')
-        if actual not in {frozen['visibility_sha256'], intended}:
-            raise OnboardingError('receiving_bootstrap_visibility_changed')
-        return raw
+        return source_visibility_bytes(self.source, frozen, observations)
 
     def _recover_stage(self, upgrade, transaction: Path, intent: dict, frozen: dict, candidate: dict) -> None:
         recover_capability_stage(upgrade, runtime_root=self.source.root, transaction=transaction,
@@ -2859,50 +3116,8 @@ class SourceBootstrapController:
             record=self._record, quiescence=lambda: self._stopped(frozen, candidate))
 
     def _publish_visibility(self, upgrade, frozen: dict, transaction: Path) -> dict:
-        """Derive through the owning signer, then journal an exact envelope CAS."""
-        from daimon_matrix.canonical import canonical_bytes
-        from daimon_matrix.operator_messaging import _reissue_installation
-        from .onboarding_service import publish
-        observations = (self._row()[0]['runtime_observation'] or {}).get('source_bootstrap', {})
-        with self.source.writer():
-            self._visibility_current(frozen, observations)
-            intended = observations.get('visibility_intent')
-            if intended is None:
-                current = self.source._load(signed=False)
-                bundle = being_seed._read(self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
-                # Only an isolated unpublished copy is passed to the existing
-                # reissue helper. Its source is the exact frozen envelope; all
-                # local/foreign attestation rules remain owned by Matrix.
-                with tempfile.TemporaryDirectory(prefix='.visibility-', dir=transaction) as scratch:
-                    copy = Path(scratch) / 'installation.json'
-                    publish(copy, canonical_bytes(frozen['visibility_envelope']))
-                    _reissue_installation(current, copy, application_sha256=digest(bundle))
-                    envelope = being_seed._read(copy, limit=being_seed.MAX_SELECTION)
-                raw = canonical_bytes(envelope)
-                intended = dict(envelope=envelope, installation_sha256=hashlib.sha256(raw).hexdigest(),
-                    runtime_sha256=hashlib.sha256(canonical_bytes(bundle)).hexdigest())
-                self._record('visibility_intent', intended)
-            raw = canonical_bytes(intended['envelope'])
-            if hashlib.sha256(raw).hexdigest() != intended['installation_sha256']:
-                raise OnboardingError('receiving_bootstrap_binding_conflict')
-            observations = (self._row()[0]['runtime_observation'] or {})['source_bootstrap']
-            actual = self._visibility_current(frozen, observations)
-            if actual != raw:
-                previous = self.source.visibility.with_name(self.source.visibility.name + '.' + frozen['visibility_sha256'] + '.previous')
-                publish(previous, actual)
-                temporary = self.source.visibility.with_name('.bootstrap-' + self.operation_id + '.json')
-                publish(temporary, raw)
-                if self._visibility_current(frozen, observations) != actual:
-                    raise OnboardingError('receiving_bootstrap_visibility_changed')
-                os.replace(temporary, self.source.visibility)
-            descriptor = os.open(self.source.visibility, os.O_RDONLY | os.O_NOFOLLOW)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            upgrade._sync(self.source.visibility.parent)
-            self.source._load(signed=True).egress.validate_registered_catalogs()
-        return {key: intended[key] for key in ('installation_sha256', 'runtime_sha256')}
+        return publish_source_visibility(self.source, upgrade, frozen, transaction,
+            operation_id=self.operation_id, effects=self._publication_effects, record=self._record)
 
     def quiesce(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
         """Retain exact process exit separately from graceful delivery/drain."""
@@ -3120,74 +3335,10 @@ class SourceBootstrapController:
                     self._record('unit_selected', selected)
                 return dict(schema='cluster-source-bootstrap-preservation/v1', operation_id=self.operation_id,
                     preserved=True, loaded_readiness='unobserved')
-            password = bytes(self.source._reader())
-            transaction = Path(candidate['transaction'])
-            ready_path = transaction / 'ready.json'
-            try:
-                ready_document = json.loads(onboarding_release.regular(ready_path, uid=os.geteuid()))
-                complete = isinstance(ready_document, dict) and ready_document.get('schema') == 'dm.operator.capability-upgrade/v1'
-            except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
-                complete = False
-            if not complete:
-                bundle = being_seed._read(self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
-                if digest(bundle) != frozen['bundle_sha256']:
-                    raise OnboardingError('receiving_bootstrap_identity_conflict')
-                intent = dict(source_sha256=upgrade.inventory_digest(self.source.root),
-                    counter=bundle['keystore']['counter'], control_head=bundle['control_head'],
-                    being_ref=bundle['manifest']['being_ref'], origin=bundle['local_origin'])
-                if frozen.get('mode') == 'renew':
-                    if controller_preservation(self.source.root, bundle) != frozen['preservation']:
-                        raise OnboardingError('receiving_controller_preservation_changed')
-                    renewal_authorization(bundle, candidate['expires_at_ms'])
-                retained_intent = observations.get('capability_intent', intent)
-                if retained_intent != intent:
-                    raise OnboardingError('receiving_bootstrap_source_changed')
-                self._record('capability_intent', intent)
-                stage_intent = observations.get('capability_stage_intent')
-                if stage_intent is None:
-                    if transaction.exists() or transaction.is_symlink():
-                        raise OnboardingError('receiving_bootstrap_unowned_stage')
-                    self._record('capability_stage_intent', dict(transaction=str(transaction)))
-                elif stage_intent != dict(transaction=str(transaction)):
-                    raise OnboardingError('receiving_bootstrap_binding_conflict')
-                self._recover_stage(upgrade, transaction, intent, frozen, candidate)
-                self._stopped(frozen, candidate, **options)
-                upgrade.stage_capabilities(source=self.source.root, transaction=transaction,
-                    expected_source_sha256=intent['source_sha256'], expected_counter=intent['counter'],
-                    expected_control_head=intent['control_head'], expected_being_ref=intent['being_ref'],
-                    expected_origin=intent['origin'], add_methods=frozen.get('capability_additions', {}),
-                    **source_stage_options(frozen), expires_at_ms=candidate['expires_at_ms'], password=password, externally_quiesced=True)
-            ready = onboarding_release.regular(ready_path, uid=os.geteuid())
-            receipt = json.loads(ready)
-            intent = (self._row()[0]['runtime_observation'] or {})['source_bootstrap']['capability_intent']
-            if (receipt.get('source_sha256') != intent['source_sha256']
-                    or receipt.get('origin') != intent['origin'] or receipt.get('control_head') != intent['control_head']
-                    or not source_stage_matches(receipt, frozen) or receipt.get('expires_at_ms') != candidate['expires_at_ms']):
-                raise OnboardingError('receiving_bootstrap_binding_conflict')
-            ready_hash = hashlib.sha256(ready).hexdigest()
-            descriptor = os.open(ready_path, os.O_RDONLY | os.O_NOFOLLOW)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            upgrade._sync(transaction)
-            self._record('capability_ready', dict(ready_sha256=ready_hash))
-            self._stopped(frozen, candidate, **options)
-            # After a lost publication ACK the native helper resolves the same
-            # atomic exchange. Never restage or restore its old checkpoint.
-            published = observations.get('capability_published')
-            if published is None:
-                publication = upgrade.publish(source=self.source.root, transaction=transaction,
-                    expected_receipt_sha256=ready_hash, password=password, externally_quiesced=True,
-                    capability_upgrade=True)
-                published = dict(publication=publication, runtime_sha256=hashlib.sha256(
-                    onboarding_release.regular(self.source.root / 'runtime.json', uid=os.geteuid())).hexdigest())
-                self._record('capability_published', published)
-            if hashlib.sha256(onboarding_release.regular(self.source.root / 'runtime.json', uid=os.geteuid())).hexdigest() != published['runtime_sha256']:
-                raise OnboardingError('receiving_bootstrap_source_changed')
-            self._stopped(frozen, candidate, **options)
-            self._record('visibility_published', self._publish_visibility(upgrade, frozen, transaction))
-            self._stopped(frozen, candidate, **options)
+            publish_source_capability(self.source, frozen, candidate,
+                effects=self._publication_effects, record=self._record,
+                require_quiescence=lambda: self._stopped(frozen, candidate, **options),
+                recover_stage=self._recover_stage, publish_visibility=self._publish_visibility)
             selected = select_entrypoint(self.manager.unit, candidate['argv'],
                 previous_sha256=frozen['service']['unit_sha256'], **selection_options)
             self._record('unit_selected', selected)

@@ -445,6 +445,25 @@ def test_invalid_wait_and_unquiesced_publish_have_no_effect(fixture):
     assert manager.stops == 0 and journal.get(identifier)['state'] == 'planned'
 
 
+def test_quiesced_source_clears_both_existing_runtime_sockets(fixture):
+    import socket
+
+    source, manager, journal, identifier, _ = fixture
+    source.settings['group_socket_at_runtime'] = True
+    for name in ('matrix.sock', 'tribe.sock'):
+        path = source.root / name
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(path))
+        path.chmod(0o600)
+
+    controller = SourceBootstrapController(journal, identifier, source, manager)
+    # This is the writer step after the operation has observed exact exit.
+    manager.live = False
+    controller._writer_quiesced()
+    assert not (source.root / 'matrix.sock').exists()
+    assert not (source.root / 'tribe.sock').exists()
+
+
 def test_source_manager_uses_only_named_user_unit_and_rejects_different_fragment(tmp_path):
     unit = tmp_path / 'daimon-matrix-fixture.service'
     unit.write_bytes(b'[Service]\nExecStart=/existing/loader\n')

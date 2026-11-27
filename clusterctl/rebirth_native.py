@@ -388,12 +388,17 @@ class ProfileMaintenance:
             if row['state'] == 'completed':
                 return {**row['result'],'retained_completion':True}
             before = row['expected_precondition']
+            issuance = 'controller_issuance' in before
+            request = row['intent'].get('native_profile_maintenance', {})
             if (row['intended_transition'] != {'native_profile':self.candidate}
-                    or set(before) != {'native_profile', 'receiving', 'service', 'scope'}):
+                    or set(before) - {'controller_issuance'} != {'native_profile', 'receiving', 'service', 'scope'}
+                    or issuance != ('controller_helper' in request)):
                 raise RebirthHostError('rebirth_host_native_profile_binding_changed')
             previous, receiving, service, scope = (before[key] for key in (
                 'native_profile', 'receiving', 'service', 'scope'))
             if any(previous[key] != self.candidate[key] for key in ('schema','config','home')):
+                raise RebirthHostError('rebirth_host_native_profile_binding_changed')
+            if issuance and previous != self.candidate:
                 raise RebirthHostError('rebirth_host_native_profile_binding_changed')
             def unchanged():
                 budget()
@@ -439,11 +444,22 @@ class ProfileMaintenance:
                             or not all(observe_process_exit(process) for process in (
                                 receiving['process'],scope['admission_parent']))):
                         raise RebirthHostError('rebirth_host_native_profile_exit_unobserved')
-                    if 'catalogs_migrated' not in effects:
+                    if issuance:
+                        published = self.owner.issue_controller(
+                            request['controller_helper'], request, deadline_ns=deadline_ns)
+                        from .onboarding_receiving_update import h8_controller_publication_id
+                        publication = self.journal.get(h8_controller_publication_id(self.operation_id))
+                        if (publication is None or publication['state'] != 'completed'
+                                or published != publication['result']
+                                or published.get('runtime_sha256') != publication['runtime_observation']
+                                    .get('visibility_published', {}).get('runtime_sha256')):
+                            raise RebirthHostError('rebirth_host_native_profile_binding_changed')
+                        effects['capability_published'] = self._record('capability_published', published)
+                    elif 'catalogs_migrated' not in effects:
                         effects['catalogs_migrated'] = self._record('catalogs_migrated',
                             self.owner.migrate(self.candidate,receiving,operation_id=self.operation_id,
                                 deadline_ns=deadline_ns))
-                    if 'profile_selected' not in effects:
+                    if not issuance and 'profile_selected' not in effects:
                         effects['profile_selected'] = self._record('profile_selected',
                             self.owner.select(self.candidate,previous=previous,deadline_ns=deadline_ns))
                     self._record('start_intent',dict(selected_sha256=digest(self.candidate)))
@@ -474,9 +490,13 @@ class ProfileMaintenance:
                 prior_runtime = receiving['runtime_status']['loaded_runtime']
                 application = observed['runtime_status']['loaded_application']
                 prior_application = receiving['runtime_status']['loaded_application']
-                if (observed['server'] != receiving['server']
+                expected_runtime = (effects['capability_published']['runtime_sha256']
+                    if issuance else prior_runtime['runtime_bundle_sha256'])
+                prior_origin = receiving['runtime_status']['local_origin'] if issuance else receiving['server']
+                if (issuance and observed.get('gate', {}).get('controlled') is not True
+                        or observed['server'] != prior_origin
                         or loaded['qualified_startup']['code_digest'] != self.candidate['code_digest']
-                        or loaded['runtime_bundle_sha256'] != prior_runtime['runtime_bundle_sha256']
+                        or loaded['runtime_bundle_sha256'] != expected_runtime
                         or any(application[key] != prior_application[key]
                             for key in ('application_sha256','publication_sha256'))
                         or application['visibility']['installation_sha256']
@@ -491,6 +511,8 @@ class ProfileMaintenance:
                 candidate_digest=self.candidate['code_digest'],process=effects['started']['process'],
                 origin=effects['started']['server'],loaded=effects['started'],
                 complete=True,receiving_readiness='unobserved')
+            if issuance:
+                result['controller_loaded'] = True
             self.journal.advance(self.operation_id,'completed',result=result)
             return result
 
@@ -615,6 +637,15 @@ print(json.dumps(prepare_profile_sdk(json.load(sys.stdin),deadline_ns=int(sys.ar
             raise RebirthHostError('rebirth_host_native_profile_owner_unconfirmed')
         return observed
 
+    def prepare_controller(self, helper: dict, observed: dict, *, expires_at_ms: int,
+                           deadline_ns: int) -> dict:
+        return self._source(helper, ['--h8-controller', 'prepare'], deadline_ns=deadline_ns,
+            payload=dict(process=observed['process'], expires_at_ms=expires_at_ms))
+
+    def issue_controller(self, helper: dict, spec: dict, *, deadline_ns: int) -> dict:
+        return self._source(helper, ['--h8-controller', 'publish'], deadline_ns=deadline_ns,
+            payload={key: spec[key] for key in ('journal', 'unit', 'operation_id')})
+
     def migrate(self, profile: dict, receiving: dict, *, operation_id: str, deadline_ns: int) -> dict:
         from .rebirth_host import RebirthHostError
         status = receiving['runtime_status']
@@ -660,7 +691,8 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
     from .owner_process import ParentProcessPresence
     from .rebirth_host import RebirthHostError
     fields = {'schema','operation_id','profile','candidate','unit','journal','max_seconds'}
-    if (not isinstance(spec,dict) or set(spec) - {'manager'} != fields
+    controller_fields = {'controller_helper', 'controller_expires_at_ms'}
+    if (not isinstance(spec,dict) or set(spec) - {'manager'} - controller_fields != fields
             or spec['schema'] != 'cluster-native-profile-maintenance/v1'
             or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 180
             or not isinstance(spec['operation_id'],str)
@@ -673,6 +705,10 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
     if (manager_kind == 'system') != (os.geteuid() == 0):
         raise RebirthHostError('rebirth_host_native_profile_maintenance_spec_required')
     candidate = _profile(spec['candidate'])
+    issuance = controller_fields & spec.keys()
+    if issuance and (issuance != controller_fields or manager_kind != 'user'
+            or type(spec['controller_expires_at_ms']) is not int):
+        raise RebirthHostError('rebirth_host_native_profile_maintenance_spec_required')
     deadline = time.monotonic_ns()+spec['max_seconds']*1_000_000_000
     if deadline_ns is not None:
         deadline = min(deadline,deadline_ns)
@@ -693,11 +729,13 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
             raise RebirthHostError('rebirth_host_native_profile_binding_changed')
         # Prepare a genuinely changed candidate before any lifecycle effect.
         # Check-only and unchanged selection remain observation-only.
+        if issuance and previous != candidate:
+            raise RebirthHostError('rebirth_host_native_profile_binding_changed')
         if not check_only and previous != candidate:
             owner.prepare_sdk(candidate, deadline_ns=deadline)
         # The successor CLI validates its immutable SDK/import context before
         # observing the still-serving predecessor. No offline runtime is loaded.
-        observe = owner.loaded_status if check_only else owner.status
+        observe = owner.loaded_status if check_only or issuance else owner.status
         observed = observe(candidate, deadline_ns=deadline)
         loaded = observed['runtime_status']['loaded_runtime']
         if (observed['process']['uid'] != owner.uid
@@ -707,11 +745,22 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
         with ParentProcessPresence(observed['process']) as family:
             associated = {**observed,'admission_parent':family.process}
             scope = manager.bind_admitted_process(associated,inspected)
+        bootstrap = {}
+        if issuance:
+            helper = _profile(spec['controller_helper'])
+            if (any(helper[key] != previous[key] for key in ('schema', 'config', 'home'))
+                    or onboarding_code_successor.sdk_parameters(Path(helper['code']), uid=0)
+                       != onboarding_code_successor.sdk_parameters(Path(previous['code']), uid=0)):
+                raise RebirthHostError('rebirth_host_native_profile_binding_changed')
+            if not check_only:
+                owner.prepare_sdk(helper, deadline_ns=deadline)
+            bootstrap['controller_issuance'] = owner.prepare_controller(helper, observed,
+                expires_at_ms=spec['controller_expires_at_ms'], deadline_ns=deadline)
         if check_only:
             return dict(schema='cluster-native-profile-maintenance-check/v1',qualified=True,
                 process=observed['process'],candidate_digest=candidate['code_digest'],
                 receiving_readiness='unobserved',effects='none')
-        if previous == candidate:
+        if previous == candidate and not issuance:
             return dict(schema='cluster-native-profile-maintenance-result/v1',complete=True,
                 operation_id=spec['operation_id'],candidate_digest=candidate['code_digest'],
                 process=observed['process'],origin=observed['server'],loaded=observed,
@@ -729,11 +778,17 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
             target = 'native-profile:' + str(owner.path)
             prior = journal.latest_for_target(target)
             if prior is not None and prior['state'] != 'completed':
-                raise RebirthHostError('rebirth_host_native_profile_operation_required')
+                recovery = prior.get('result') or {}
+                if (prior['state'] != 'compensated'
+                        or recovery.get('schema') != 'cluster-h8-controller-pre-publication-recovery/v1'
+                        or recovery.get('publication_observed') is not False
+                        or recovery.get('process') != observed['process']
+                        or set(prior.get('runtime_observation') or {}) != {'stop_intent', 'quiesced'}):
+                    raise RebirthHostError('rebirth_host_native_profile_operation_required')
             row = journal.plan(operation='receiving-update',target=target,
                 idempotency_key='native-profile:'+spec['operation_id'],operation_id=spec['operation_id'],
                 intent=intent,expected_precondition=dict(native_profile=previous,receiving=observed,
-                    service=inspected,scope=scope),intended_transition=dict(native_profile=candidate),
+                    service=inspected,scope=scope,**bootstrap),intended_transition=dict(native_profile=candidate),
                 audit_identity=dict(actor='native-profile-maintenance'),allow_terminal_successor=True)
     assert journal is not None and row is not None
     if check_only:

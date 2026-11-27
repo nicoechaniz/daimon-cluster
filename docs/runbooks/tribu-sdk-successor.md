@@ -2465,3 +2465,19 @@ The ordinary messaging attachment must point to this body's own signed app
 client and `tribe.sock`. Select its generated body-local `connection.json`
 as Portability's messaging input. Qualify its catalog and the `tribe` channel
 without sending, and keep receipt, delivery and model use as separate facts.
+
+If another receiver requires a qualified reader proof, select the prepared
+`--native-source-profile` on the Rebirth launcher during a scoped transition.
+It must reference the same installed body and use its existing custody, native
+visibility and Source outputs. A completed standalone start is retained as the
+predecessor of the qualified Source start. Native Source hosts the group
+listener under the Source outputs directory. Confirm consumers use its actual
+socket and that the ordinary private listener also starts.
+
+If the qualified start failed before recording a runtime or logical
+observation, the exact preceding standalone selection can be restarted using
+`--recover-native-start <failed-operation-id>`. Keep the original standalone
+options and remove the candidate Source option for that recovery. The journal
+retains the failed attempt and admits recovery only for the original same-body
+selection. After a start has been observed, resolve any later issue through
+the qualified Source maintenance path.

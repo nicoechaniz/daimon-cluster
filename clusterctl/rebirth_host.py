@@ -426,7 +426,6 @@ def launch_rebirth_host(
         password_descriptor < 0
         or timeout_s <= 0
         or timeout_s > 300
-        or (recover_native_start is not None and native_source_profile is None)
         or (admission_client is not None and admission_client_config is not None)
         or isinstance(admission_lease_ttl_s, bool)
         or not 3 <= admission_lease_ttl_s <= 300

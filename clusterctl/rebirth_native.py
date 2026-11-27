@@ -75,6 +75,22 @@ def select_profile(path: Path, candidate: dict, *, previous: dict) -> dict:
         raise RebirthHostError('rebirth_host_native_profile_selection_conflict') from error
 
 
+def _start_source_selection(call: dict) -> dict:
+    from .rebirth_host import RebirthHostError
+
+    fields = {'config', 'config_sha256', 'code', 'code_digest', 'venv', 'sdk_digest'}
+    if (not isinstance(call, dict) or set(call) != {'operation', 'selection'}
+            or call['operation'] != 'native-source' or not isinstance(call['selection'], dict)
+            or set(call['selection']) != fields
+            or any(not isinstance(value, str) or not value for value in call['selection'].values())):
+        raise RebirthHostError('rebirth_host_journal_conflict')
+    selection = call['selection']
+    venv = Path(selection['venv'])
+    if not venv.is_absolute() or venv.name != 'venv' or venv.parent.name != selection['sdk_digest']:
+        raise RebirthHostError('rebirth_host_journal_conflict')
+    return selection
+
+
 def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_id: str,
                  recover_operation_id: str | None = None,
                  authority_predecessors: frozenset[str] = frozenset()) -> dict:
@@ -85,6 +101,7 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
     Original startup/audit records remain immutable and exact retries reuse the
     current planned or completed record instead of manufacturing another birth.
     """
+    from .matrix_host import MATRIX_CONTRACT_COMMIT
     from .rebirth_host import RebirthHostError
 
     previous = journal.latest_for_target(target)
@@ -105,6 +122,7 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
                     or (failed.get('result') or {}).get('schema') != 'dm.cluster.native-unready-recovery/v1'
                     or failed['intent_hash'] != recovery['intent_hash']):
                 raise RebirthHostError('rebirth_host_journal_conflict')
+        parent = None
         if anchor is not None:
             if not isinstance(anchor, dict) or set(anchor) != {'operation_id', 'intent_hash'}:
                 raise RebirthHostError('rebirth_host_journal_conflict')
@@ -146,26 +164,31 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
         standalone_advance = (standalone and verified_authority_advance
             and {k: v for k, v in prior.items() if k != manifest_field}
             == {k: v for k, v in intent.items() if k != manifest_field})
-        if not standalone_advance:
+        standalone_call = {'operation': 'matrix-host', 'matrix_contract_commit': MATRIX_CONTRACT_COMMIT}
+        same_body = {k: v for k, v in prior.items() if k != 'runtime_call'} == {
+            k: v for k, v in intent.items() if k != 'runtime_call'}
+        adopting_source = (
+            same_body and previous['state'] == 'completed' and recover_operation_id is None
+            and before == standalone_call and isinstance(after, dict)
+            and after.get('operation') == 'native-source'
+        )
+        parent_intent = {} if parent is None else dict(parent['intent'])
+        parent_intent.pop('native_start_predecessor', None)
+        parent_intent.pop('native_start_recovery', None)
+        restoring_standalone = (
+            same_body and recovering and after == standalone_call and parent_intent == intent
+            and isinstance(before, dict) and before.get('operation') == 'native-source'
+        )
+        if adopting_source:
+            _start_source_selection(after)
+        elif not standalone_advance and not restoring_standalone:
             if (previous['state'] != 'completed' and not recovering
                     or {k: v for k, v in prior.items() if k not in changed}
-                        != {k: v for k, v in intent.items() if k not in changed}
-                    or not isinstance(before, dict) or not isinstance(after, dict)
-                    or set(before) != {'operation', 'selection'} or set(after) != set(before)
-                    or before['operation'] != 'native-source' or after['operation'] != 'native-source'):
+                        != {k: v for k, v in intent.items() if k not in changed}):
                 raise RebirthHostError('rebirth_host_journal_conflict')
-            old, new = before['selection'], after['selection']
-            fields = {'config', 'config_sha256', 'code', 'code_digest', 'venv', 'sdk_digest'}
-            if (not isinstance(old, dict) or not isinstance(new, dict)
-                    or set(old) != fields or set(new) != fields
-                    or any(not isinstance(v, str) or not v for v in (*old.values(), *new.values()))
-                    or old['config'] != new['config'] or old['config_sha256'] != new['config_sha256']):
+            old, new = _start_source_selection(before), _start_source_selection(after)
+            if old['config'] != new['config'] or old['config_sha256'] != new['config_sha256']:
                 raise RebirthHostError('rebirth_host_journal_conflict')
-            for selection in (old, new):
-                venv = Path(selection['venv'])
-                if (not venv.is_absolute() or venv.name != 'venv'
-                        or venv.parent.name != selection['sdk_digest']):
-                    raise RebirthHostError('rebirth_host_journal_conflict')
             if Path(old['venv']).parent.parent != Path(new['venv']).parent.parent:
                 raise RebirthHostError('rebirth_host_journal_conflict')
         if recovering:

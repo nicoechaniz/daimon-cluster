@@ -2771,6 +2771,10 @@ def prepare_h8_controller(source, observed: dict, *, expires_at_ms: int) -> dict
         visibility_sha256=hashlib.sha256(visibility).hexdigest())
 
 
+def h8_controller_publication_id(operation_id: str) -> str:
+    return str(uuid.uuid5(uuid.UUID(operation_id), 'h8-receiving-controller-publication'))
+
+
 def publish_h8_controller(source, journal, operation_id: str, manager, *, deadline_ns: int) -> dict:
     """Issue from the H8 operation's retained and observed stopped state."""
     from daimon_matrix.daemon import _prepare_socket
@@ -2788,20 +2792,25 @@ def publish_h8_controller(source, journal, operation_id: str, manager, *, deadli
             or frozen['settings_sha256'] != digest(source.settings)):
         raise OnboardingError('receiving_bootstrap_binding_conflict')
 
+    publication_id = h8_controller_publication_id(operation_id)
+
     def effects():
-        return journal.get(operation_id)['runtime_observation'] or {}
+        return journal.get(publication_id)['runtime_observation'] or {}
 
     def record(key, value):
-        previous = effects()
-        if key in previous:
+        previous = journal.get(publication_id)['runtime_observation']
+        if key in (previous or {}):
             if previous[key] != value:
                 raise OnboardingError('receiving_bootstrap_observation_conflict')
             return
-        journal.advance(operation_id, 'runtime-dispatching',
-            runtime_observation={**previous, key: value}, expected_runtime_observation=previous)
+        journal.advance(publication_id, 'runtime-dispatching',
+            runtime_observation={**(previous or {}), key: value}, expected_runtime_observation=previous)
 
     def require_quiescence():
-        observed = effects().get('quiesced') or {}
+        lifecycle = journal.get(operation_id)
+        if lifecycle['state'] != 'runtime-dispatching':
+            raise OnboardingError('receiving_bootstrap_operation_required')
+        observed = (lifecycle['runtime_observation'] or {}).get('quiesced') or {}
         if (observed.get('exit_observed') is not True
                 or any(observed.get(key) != scope[key] or not observe_process_exit(scope[key])
                     for key in ('process', 'admission_parent'))):
@@ -2823,20 +2832,38 @@ def publish_h8_controller(source, journal, operation_id: str, manager, *, deadli
         return publish_source_visibility(source, upgrade, frozen, transaction,
             operation_id=operation_id, effects=effects, record=record)
 
-    require_quiescence()
-    group = source_bootstrap_group(source, being_seed._read(
-        source.root / 'runtime.json', limit=being_seed.MAX_SELECTION))
-    if group != frozen['group']:
-        raise OnboardingError('receiving_bootstrap_group_changed')
-    with source.writer():
+    # The lifecycle owns its own operation throughout the subprocess call.
+    # The signer records a distinct effect in the same journal.
+    with journal.mutation_lock(publication_id):
         require_quiescence()
-        _prepare_socket(source.root / 'matrix.sock')
-        if source.settings.get('group_socket_at_runtime') is True:
-            _prepare_socket(source.root / 'tribe.sock')
-    return publish_source_capability(source, frozen,
-        dict(transaction=str(transaction), expires_at_ms=request['controller_expires_at_ms']),
-        effects=effects, record=record, require_quiescence=require_quiescence,
-        recover_stage=recover, publish_visibility=publish_visibility)
+        effect = journal.get(publication_id)
+        if effect is None:
+            effect = journal.plan(operation='receiving-update', operation_id=publication_id,
+                target='h8-controller-publication:' + operation_id, idempotency_key=publication_id,
+                intent=dict(lifecycle=operation_id, lifecycle_intent_sha256=row['intent_hash']),
+                expected_precondition=frozen, intended_transition={'controller': 'issue'},
+                audit_identity={'actor': 'native-h8-controller-owner'})
+        if effect['intent'].get('lifecycle_intent_sha256') != row['intent_hash']:
+            raise OnboardingError('receiving_bootstrap_binding_conflict')
+        group = source_bootstrap_group(source, being_seed._read(
+            source.root / 'runtime.json', limit=being_seed.MAX_SELECTION))
+        if group != frozen['group']:
+            raise OnboardingError('receiving_bootstrap_group_changed')
+        if effect['state'] == 'completed':
+            return effect['result']
+        if effect['state'] == 'planned':
+            journal.advance(publication_id, 'runtime-dispatching')
+        with source.writer():
+            require_quiescence()
+            _prepare_socket(source.root / 'matrix.sock')
+            if source.settings.get('group_socket_at_runtime') is True:
+                _prepare_socket(source.root / 'tribe.sock')
+        published = publish_source_capability(source, frozen,
+            dict(transaction=str(transaction), expires_at_ms=request['controller_expires_at_ms']),
+            effects=effects, record=record, require_quiescence=require_quiescence,
+            recover_stage=recover, publish_visibility=publish_visibility)
+        journal.advance(publication_id, 'completed', result=published)
+        return published
 
 
 class SourceBootstrapController:

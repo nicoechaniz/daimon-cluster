@@ -447,11 +447,14 @@ class ProfileMaintenance:
                     if issuance:
                         published = self.owner.issue_controller(
                             request['controller_helper'], request, deadline_ns=deadline_ns)
-                        retained = self.journal.get(self.operation_id)['runtime_observation']
-                        if (published != retained.get('capability_published')
-                                or published.get('runtime_sha256') != retained.get('visibility_published', {}).get('runtime_sha256')):
+                        from .onboarding_receiving_update import h8_controller_publication_id
+                        publication = self.journal.get(h8_controller_publication_id(self.operation_id))
+                        if (publication is None or publication['state'] != 'completed'
+                                or published != publication['result']
+                                or published.get('runtime_sha256') != publication['runtime_observation']
+                                    .get('visibility_published', {}).get('runtime_sha256')):
                             raise RebirthHostError('rebirth_host_native_profile_binding_changed')
-                        effects['capability_published'] = published
+                        effects['capability_published'] = self._record('capability_published', published)
                     elif 'catalogs_migrated' not in effects:
                         effects['catalogs_migrated'] = self._record('catalogs_migrated',
                             self.owner.migrate(self.candidate,receiving,operation_id=self.operation_id,

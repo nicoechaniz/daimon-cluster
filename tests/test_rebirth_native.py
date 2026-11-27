@@ -775,18 +775,28 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
 
         def issue_controller(self, helper, spec, **_):
             assert helper == {"fixture": "helper"} and not manager.active
-            current = journal.get(row["operation_id"])
-            effects = current["runtime_observation"]
-            if "capability_published" not in effects:
+            from concurrent.futures import ThreadPoolExecutor
+            from clusterctl.onboarding_receiving_update import h8_controller_publication_id
+
+            def publish():
+                publication_id = h8_controller_publication_id(row["operation_id"])
+                retained = journal.get(publication_id)
+                if retained:
+                    return retained["result"]
                 calls.append("issue")
                 published = dict(runtime_sha256="2" * 64)
-                journal.advance(row["operation_id"], current["state"],
-                    runtime_observation={**effects, "capability_published": published,
-                        "visibility_published": published}, expected_runtime_observation=effects)
+                journal.plan(operation="receiving-update", operation_id=publication_id,
+                    target="controller-effect", idempotency_key=publication_id, intent={},
+                    expected_precondition={}, intended_transition={}, audit_identity={"actor": "test"})
+                journal.advance(publication_id, "runtime-dispatching")
+                journal.advance(publication_id, "completed", result=published,
+                    runtime_observation={"visibility_published": published})
                 if failure == "controller-lost":
                     raise OSError("lost controller publication acknowledgement")
                 return published
-            return effects["capability_published"]
+
+            with ThreadPoolExecutor(max_workers=1) as signer:
+                return signer.submit(publish).result(timeout=5)
 
         def select(self, value, **_):
             calls.append("select")
@@ -817,6 +827,7 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
     row = journal.plan(
         operation="receiving-update",
         target="native-profile:fixture",
+        operation_id="ad23ce12-1423-4faf-9f7a-b40590578fc2",
         idempotency_key="fixture",
         intent={"native_profile_maintenance": {"controller_helper": {"fixture": "helper"}}}
             if issue_controller else {},

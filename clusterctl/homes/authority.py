@@ -51,7 +51,8 @@ class NativeAuthority:
         self._proof_cache_bytes = 0
         self._proof_cache_lock = threading.RLock()
         self._proof_cache_entries = 16
-        self._proof_cache_limit = 16 * 1024 * 1024
+        # A current cohort needs both its binding proofs and signed histories.
+        self._proof_cache_limit = 32 * 1024 * 1024
 
     def _constructed(self, kind, value, construct):
         # The exact complete input, including unknown fields, distinguishes hits.

@@ -2778,6 +2778,7 @@ def h8_controller_publication_id(operation_id: str) -> str:
 def publish_h8_controller(source, journal, operation_id: str, manager, *, deadline_ns: int) -> dict:
     """Issue from the H8 operation's retained and observed stopped state."""
     from daimon_matrix.daemon import _prepare_socket
+    from daimon_matrix.keystore import _exclusive
     from .owner_process import observe_process_exit
 
     row = journal.get(operation_id)
@@ -2858,6 +2859,10 @@ def publish_h8_controller(source, journal, operation_id: str, manager, *, deadli
             _prepare_socket(source.root / 'matrix.sock')
             if source.settings.get('group_socket_at_runtime') is True:
                 _prepare_socket(source.root / 'tribe.sock')
+            # Include the native custody lock in the pre-rotation inventory,
+            # including on runtimes installed without an earlier rotation.
+            with _exclusive(source.root / 'custody.json'):
+                pass
         published = publish_source_capability(source, frozen,
             dict(transaction=str(transaction), expires_at_ms=request['controller_expires_at_ms']),
             effects=effects, record=record, require_quiescence=require_quiescence,

@@ -878,7 +878,9 @@ def test_profile_sdk_preparation_uses_pinned_existing_helpers_before_runtime(tmp
 
 @pytest.mark.parametrize('mode', ['changed', 'check-only', 'unchanged', 'preparation-failure'])
 def test_native_profile_prepares_only_changed_live_update_before_any_stop(tmp_path, monkeypatch, mode):
-    from clusterctl import onboarding_service
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from clusterctl import onboarding_service, owner_process
     from clusterctl.operation_journal import OperationJournal
     previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/config',
         home='/owner/home', code='/qualified/old', code_digest='a'*64)
@@ -897,14 +899,38 @@ def test_native_profile_prepares_only_changed_live_update_before_any_stop(tmp_pa
             assert value == candidate
             calls.append('status')
             raise OSError('reached still-serving observation')
+        def loaded_status(self, value, **options):
+            assert mode == 'check-only' and value == candidate
+            calls.append('loaded-status')
+            return dict(process={'uid': self.uid}, runtime_status={
+                'loaded_runtime': {'qualified_startup': {'code_digest': previous['code_digest']}}})
+
+    class Manager:
+        def inspect(self, **options):
+            calls.append('inspect')
+            return {'unit': 'fixture'}
+
+        def bind_admitted_process(self, observed, inspected):
+            assert observed['admission_parent'] == {'pid': 10}
+            assert inspected == {'unit': 'fixture'}
+            calls.append('bound')
+
     monkeypatch.setattr(rebirth_native, 'ProfileOwner', Owner)
-    monkeypatch.setattr(onboarding_service, 'MatrixProfileService', lambda *args, **kwargs: object())
+    monkeypatch.setattr(onboarding_service, 'MatrixProfileService', lambda *args, **kwargs: Manager())
+    monkeypatch.setattr(owner_process, 'ParentProcessPresence',
+        lambda _: nullcontext(SimpleNamespace(process={'pid': 10})))
     monkeypatch.setattr(OperationJournal, 'existing', lambda *args: None)
     monkeypatch.setattr(os, 'geteuid', lambda: 0)
     spec = dict(schema='cluster-native-profile-maintenance/v1',
         operation_id='71578e4b-7476-4ffe-861c-0faae92cabff', profile='/owner/profile',
         candidate=candidate, unit='/system/unit', journal='/owner/journal', max_seconds=180)
-    with pytest.raises(OSError):
-        rebirth_native.run_profile_maintenance(spec, check_only=mode == 'check-only')
-    assert calls == (['prepare'] if mode == 'preparation-failure' else
-        ['prepare', 'status'] if mode == 'changed' else ['status'])
+    if mode == 'check-only':
+        result = rebirth_native.run_profile_maintenance(spec, check_only=True)
+        assert result['effects'] == 'none'
+        assert result['receiving_readiness'] == 'unobserved'
+        assert calls == ['loaded-status', 'inspect', 'bound']
+    else:
+        with pytest.raises(OSError):
+            rebirth_native.run_profile_maintenance(spec)
+        assert calls == (['prepare'] if mode == 'preparation-failure' else
+            ['prepare', 'status'] if mode == 'changed' else ['status'])

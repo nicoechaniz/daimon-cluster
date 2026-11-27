@@ -559,7 +559,7 @@ class ProfileOwner:
         return value
 
     def _source(self, profile: dict, args: list[str], *, deadline_ns: int,
-                payload: dict | None = None) -> dict:
+                payload: dict | None = None, source_deadline: bool = True) -> dict:
         import time
         deadline_ns = min(deadline_ns,time.monotonic_ns()+30_000_000_000)
         code = Path(profile['code'])
@@ -569,10 +569,11 @@ class ProfileOwner:
             raise ValueError('qualified native SDK required')
         sdk = onboarding_sdk.verify(code,uid=0,**parameters)
         venv = Path(profile['home'])/'.local/share/daimon-matrix/sdk'/digest(sdk)/'venv'
-        argv = onboarding_sdk.runtime_command(venv,venv.parent/'runtime-imports',code,
-            'clusterctl.onboarding_source',['--config',profile['config'],
-            '--code-digest',profile['code_digest'],'--code-owner','0',
-            '--observation-deadline-ns',str(deadline_ns),*args])
+        options = ['--config', profile['config'], '--code-digest', profile['code_digest'], '--code-owner', '0']
+        if source_deadline:
+            options.extend(['--observation-deadline-ns', str(deadline_ns)])
+        argv = onboarding_sdk.runtime_command(venv, venv.parent / 'runtime-imports', code,
+            'clusterctl.onboarding_source', [*options, *args])
         return self._call(argv,deadline_ns=deadline_ns,payload=payload)
 
     def prepare_sdk(self, profile: dict, *, deadline_ns: int) -> dict:
@@ -598,6 +599,21 @@ print(json.dumps(prepare_profile_sdk(json.load(sys.stdin),deadline_ns=int(sys.ar
 
     def status(self, profile: dict, *, deadline_ns: int) -> dict:
         return self._source(profile,['--owner-status'],deadline_ns=deadline_ns)
+
+    def loaded_status(self, profile: dict, *, deadline_ns: int) -> dict:
+        """Observe the signed loaded application before a controller grant exists."""
+        from .rebirth_host import RebirthHostError
+        # Older Source CLIs accept these observation flags but only accept an
+        # explicit deadline for owner controls. The subprocess still has our deadline.
+        observed = self._source(profile, ['--observe', '--require-loaded'],
+            deadline_ns=deadline_ns, source_deadline=False)
+        status = observed.get('runtime_status')
+        process = observed.get('process')
+        if (observed.get('responder_association') != 'same-connection'
+                or not isinstance(process, dict) or not isinstance(status, dict)
+                or not isinstance(status.get('local_origin'), dict)):
+            raise RebirthHostError('rebirth_host_native_profile_owner_unconfirmed')
+        return observed
 
     def migrate(self, profile: dict, receiving: dict, *, operation_id: str, deadline_ns: int) -> dict:
         from .rebirth_host import RebirthHostError
@@ -676,7 +692,8 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
             owner.prepare_sdk(candidate, deadline_ns=deadline)
         # The successor CLI validates its immutable SDK/import context before
         # observing the still-serving predecessor. No offline runtime is loaded.
-        observed = owner.status(candidate,deadline_ns=deadline)
+        observe = owner.loaded_status if check_only else owner.status
+        observed = observe(candidate, deadline_ns=deadline)
         loaded = observed['runtime_status']['loaded_runtime']
         if (observed['process']['uid'] != owner.uid
                 or loaded['qualified_startup']['code_digest'] != previous['code_digest']):
@@ -687,7 +704,8 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
             scope = manager.bind_admitted_process(associated,inspected)
         if check_only:
             return dict(schema='cluster-native-profile-maintenance-check/v1',qualified=True,
-                process=observed['process'],candidate_digest=candidate['code_digest'],effects='none')
+                process=observed['process'],candidate_digest=candidate['code_digest'],
+                receiving_readiness='unobserved',effects='none')
         if previous == candidate:
             return dict(schema='cluster-native-profile-maintenance-result/v1',complete=True,
                 operation_id=spec['operation_id'],candidate_digest=candidate['code_digest'],
@@ -714,13 +732,18 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
                 audit_identity=dict(actor='native-profile-maintenance'),allow_terminal_successor=True)
     assert journal is not None and row is not None
     if check_only:
-        observed = owner.status(owner.profile(),deadline_ns=deadline)
+        selected = owner.profile()
+        observed = owner.loaded_status(selected, deadline_ns=deadline)
+        loaded = observed['runtime_status']['loaded_runtime']
+        if (observed['process']['uid'] != owner.uid
+                or loaded['qualified_startup']['code_digest'] != selected['code_digest']):
+            raise RebirthHostError('rebirth_host_native_profile_binding_changed')
         with ParentProcessPresence(observed['process']) as family:
             manager.bind_admitted_process({**observed,'admission_parent':family.process},
                 manager.inspect(deadline_ns=deadline))
         return dict(schema='cluster-native-profile-maintenance-check/v1',qualified=True,
             operation_id=spec['operation_id'],retained_state=row['state'],
-            process=observed['process'],effects='none')
+            process=observed['process'],receiving_readiness='unobserved',effects='none')
     return ProfileMaintenance(journal,spec['operation_id'],owner,manager,candidate).run(deadline_ns=deadline)
 
 

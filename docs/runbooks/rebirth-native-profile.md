@@ -100,10 +100,12 @@ needed controls and distinguishes `qualified-local-projection` from message or
 model acceptance. Omit reader completion only for an explicitly code-only result,
 which reports `receiving_readiness: unobserved`.
 
-`--check-only` inspects the live owner, service and configured reader routes
-without creating an operation, selecting software or dispatching lifecycle or
-reader controls. Every owner call and the cohort share the invocation's single
-absolute deadline. Retry the same spec/operation: confirmed effects are retained.
+`--check-only` authenticates the loaded application and associates its child
+process with the admission supervisor before a receiving controller is issued.
+This check reports `receiving_readiness: unobserved`. A configured reader
+completion still checks its required reader routes. The check creates no
+operation and dispatches no lifecycle or reader controls. Every owner call and
+the cohort share the invocation's single absolute deadline. Retry the same spec/operation: confirmed effects are retained.
 Pinned process-exit waits respect their60-second primitive limit within the
 original overall deadline. An accepted start may need time to expose its owner
 reader: observe readiness under that same deadline without starting again.

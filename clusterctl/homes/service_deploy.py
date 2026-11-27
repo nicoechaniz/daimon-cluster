@@ -11,7 +11,7 @@ from urllib.parse import quote, urlsplit
 from ..operation_journal import OperationJournal
 from ..onboarding_conversation_routes import Routes, LIMIT, configuration as route_configuration
 from .policy import validate_audience
-from .service_package import (MAX_ARCHIVE, RESERVED, canonical, closed, exact, path,
+from .service_package import (RESERVED, archive_limit, canonical, closed, exact, path,
                               request, sha, unpack)
 from .service_runtime import receiver, key
 
@@ -279,8 +279,8 @@ class Deployments:
                 package['version'] + '/' + quote(package['file'], safe='/'), timeout=15) as response:
             if response.headers.get('X-Home-Version') != package['version']:
                 raise ValueError('service_package_delivery_version_mismatch')
-            raw = response.read(MAX_ARCHIVE + 1)
-        parsed, _ = unpack(raw, package['sha256'])
+            raw = response.read(archive_limit(c['service']) + 1)
+        parsed, _ = unpack(raw, package['sha256'], service=c['service'])
         if parsed['service'] != c['service'] or parsed['state_schema'] != c['state_schema']:
             raise ValueError('service_state_or_identity_mismatch')
         return raw

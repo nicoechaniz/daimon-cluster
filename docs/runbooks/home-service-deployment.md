@@ -69,8 +69,11 @@ an absolute local HTTP `path` and exact response-body `sha256`, and `files`:
 `[{"path":"main.js","sha256":"..."}, ...]`. The inventory lists every file
 except `service.json`. Its canonical stored bytes and complete inventory are
 verified with the existing receiving release verifier. The archive SHA covers
-the original archive. Archive limits are 32 MiB, 128 MiB unpacked, 4096 files and
-32 MiB per file. Entry/file paths use ASCII letters/digits/underscore/dot/slash/
+the original archive. The default archive limit is 32 MiB. The server-selected Holodeck
+grant and its fixed executor allow 40 MiB for the world assets. The limits
+of 128 MiB unpacked, 4096 files and 32 MiB per file still apply. A manifest
+cannot choose its own archive limit. The scoped transport's existing intake
+bound covers the 40 MiB archive and its base64 envelope. Entry/file paths use ASCII letters/digits/underscore/dot/slash/
 hyphen with no empty, dot or parent components. Use JSON health bodies without
 timestamps or other variable bytes.
 

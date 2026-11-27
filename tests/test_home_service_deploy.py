@@ -10,7 +10,7 @@ import pytest
 
 from clusterctl.homes.service_package import canonical, sha, unpack, request
 from clusterctl.homes.service_runtime import Runtime, key, receiver, unit
-from clusterctl.homes.service_deploy import configuration, ServiceRoutes
+from clusterctl.homes.service_deploy import configuration, Deployments, ServiceRoutes
 from clusterctl.homes.registry import version_digest
 from clusterctl.homes.service import Application, handler
 from clusterctl.homes.sessions import Sessions
@@ -18,11 +18,11 @@ from tests.test_home_gateway import Authority, serving
 
 
 def archive(
-    *, source=b'console.log("own service");', name="main.js", kind=tarfile.REGTYPE
+    *, source=b'console.log("own service");', name="main.js", kind=tarfile.REGTYPE, service="workshop"
 ):
     spec = dict(
         schema="dm.home-service-package/v1",
-        service="workshop",
+        service=service,
         runtime="node24-http",
         entry=name,
         state_schema="v1",
@@ -241,6 +241,27 @@ def envelope(c, value, raw=None, action="apply"):
         previous=value["previous"],
         package=base64.b64encode(raw).decode() if raw is not None else None,
     )
+
+
+def test_holodeck_archive_headroom_uses_the_selected_service_at_both_boundaries(setup):
+    from types import SimpleNamespace
+
+    c, _, _, _, _, _, value = setup
+    raw, _ = archive(source=b'x' * (32 * 1024**2), service='holodeck')
+    assert len(raw) > 32 * 1024**2
+    value['package']['sha256'] = sha(raw)
+
+    class Artifact(io.BytesIO):
+        headers = {'X-Home-Version': value['package']['version']}
+
+    app = SimpleNamespace(backends={'one': SimpleNamespace(open=lambda *_, **__: Artifact(raw))})
+    with pytest.raises(ValueError, match='service_package_digest_mismatch'):
+        Deployments.package(app, 'one', value, c)
+    c = {**c, 'service': 'holodeck'}
+    assert Deployments.package(app, 'one', value, c) == raw
+    worker = ManagerFixture(c)
+    assert worker.run(envelope(c, value, raw))['state'] == 'ready'
+    assert worker.restarts == 1
 
 
 def test_receiving_apply_recovery_and_compatible_rollback(setup):

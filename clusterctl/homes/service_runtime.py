@@ -20,7 +20,7 @@ import urllib.request
 from .. import being_seed
 from ..onboarding_conversation import atomic
 from ..onboarding_release import regular
-from .service_package import (HEX, NAME, MAX_ARCHIVE, canonical, closed, exact,
+from .service_package import (HEX, NAME, MAX_ARCHIVE, archive_limit, canonical, closed, exact,
                               path, sha, unpack, verify_tree)
 
 
@@ -270,10 +270,10 @@ class Runtime:
             elif self.unit_path.exists():
                 raise ValueError('service_existing_unit_preserved')
             self.listener_precondition(current)
-            if not isinstance(envelope['package'], str) or len(envelope['package']) > MAX_ARCHIVE * 4 // 3 + 8:
+            if not isinstance(envelope['package'], str) or len(envelope['package']) > archive_limit(c['service']) * 4 // 3 + 8:
                 raise ValueError('service_package_capacity')
             raw = base64.b64decode(envelope['package'], validate=True)
-            package, files = unpack(raw, envelope['digest'])
+            package, files = unpack(raw, envelope['digest'], service=c['service'])
             if package['service'] != c['service'] or package['state_schema'] != c['state_schema']:
                 raise ValueError('service_state_or_identity_mismatch')
             release = self.code / ('release-' + envelope['digest'])

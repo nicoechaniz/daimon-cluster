@@ -12,6 +12,7 @@ from functools import wraps
 from ..onboarding_release import inventory, regular
 
 MAX_ARCHIVE = 32 * 1024**2
+HOLODECK_MAX_ARCHIVE = 40 * 1024**2
 MAX_UNPACKED = 128 * 1024**2
 MAX_FILES = 4096
 HEX = re.compile(r'[a-f0-9]{64}')
@@ -84,10 +85,14 @@ def manifest(value):
     return value
 
 
+def archive_limit(service):
+    return HOLODECK_MAX_ARCHIVE if service == 'holodeck' else MAX_ARCHIVE
+
+
 @closed
-def unpack(raw, expected):
+def unpack(raw, expected, *, service=None):
     """Return verified bytes, before creating any path. Tar extract is never used."""
-    if len(raw) > MAX_ARCHIVE or not HEX.fullmatch(expected) or sha(raw) != expected:
+    if len(raw) > archive_limit(service) or not HEX.fullmatch(expected) or sha(raw) != expected:
         raise ValueError('service_package_digest_mismatch')
     files, size = {}, 0
     with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as archive:

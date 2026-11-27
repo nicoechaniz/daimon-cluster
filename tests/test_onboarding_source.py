@@ -28,6 +28,32 @@ def test_loaded_source_cli_requires_qualified_startup_before_owner_state(tmp_pat
     assert capsys.readouterr().out == '{"error": "native_onboarding_source_refused"}\n'
 
 
+@pytest.mark.parametrize('deadline', [None, 11_000_000_000])
+def test_source_cli_observation_passes_one_deadline_to_the_reader(tmp_path, monkeypatch, capsys, deadline):
+    from clusterctl import onboarding_source
+
+    now = 10_000_000_000
+    monkeypatch.setattr(onboarding_source.time, 'monotonic_ns', lambda: now)
+    config = tmp_path / 'source.json'
+    config.write_text('{}')
+
+    class ObservedSource:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def observe(self, *, require_loaded, deadline_ns):
+            assert not require_loaded
+            assert deadline_ns == deadline
+            return {'running': True}
+
+    monkeypatch.setattr(onboarding_source, 'Source', ObservedSource)
+    arguments = ['--config', str(config), '--observe']
+    if deadline is not None:
+        arguments.extend(['--observation-deadline-ns', str(deadline)])
+    assert onboarding_source.main(arguments) == 0
+    assert json.loads(capsys.readouterr().out) == {'running': True}
+
+
 def test_source_group_construction_does_not_invoke_unrelated_pair_ceremony(tmp_path, monkeypatch):
     root = tmp_path / 'runtime'
     root.mkdir(mode=0o700)

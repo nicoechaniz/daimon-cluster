@@ -718,9 +718,10 @@ def main(argv=None) -> int:
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
                 or args.identity_expires_at_ms is not None and not 0 < args.identity_expires_at_ms < 2**53
                 or (args.owner_status or args.owner_base_status or args.qualified_identity or grouping) and (args.ready_fd is not None or args.require_loaded)
-                or args.observation_deadline_ns is not None and not receiving):
+                or args.observation_deadline_ns is not None and not (receiving or args.observe)):
             raise OnboardingError('invalid_receiving_control_request')
-        if (args.owner_status or args.owner_base_status or args.qualified_identity or lifecycle or grouping or preparing or migrating) and args.observation_deadline_ns is None:
+        if (args.require_loaded or args.owner_status or args.owner_base_status or args.qualified_identity
+                or lifecycle or grouping or preparing or migrating) and args.observation_deadline_ns is None:
             args.observation_deadline_ns = time.monotonic_ns() + 30_000_000_000
         def accept_deadline():
             if args.observation_deadline_ns is not None and time.monotonic_ns() >= args.observation_deadline_ns:
@@ -886,7 +887,9 @@ def main(argv=None) -> int:
         if args.observe:
             if args.ready_fd is not None:
                 raise OnboardingError('invalid_source_observation_request')
-            print(json.dumps(source.observe(require_loaded=args.require_loaded)))
+            result = source.observe(require_loaded=args.require_loaded, deadline_ns=args.observation_deadline_ns)
+            accept_deadline()
+            print(json.dumps(result))
             return 0
         stop = threading.Event()
         for signum in (signal.SIGTERM, signal.SIGINT):

@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -299,6 +300,52 @@ def bind_admitted_service_process(observed: dict, inspected: dict, *,
     except (OSError, ValueError, KeyError, TypeError, PresenceError):
         raise OnboardingError('receiving_matrix_process_scope_required') from None
 
+
+
+def observe_managed_matrix_socket(socket_path: Path, *, inspect: Callable[[], dict],
+                                  deadline_ns: int) -> dict:
+    """Observe the local service/kernel predecessor while its RPC roles are expired.
+
+    This observation carries no signed runtime, reader or lifecycle authority.
+    The caller supplies its existing manager inspection for the selected unit.
+    """
+    from .owner_process import ConnectedProcessObserver, PresenceError
+
+    def socket_identity() -> tuple[int, int]:
+        info = socket_path.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid():
+            raise OnboardingError('receiving_matrix_socket_scope_required')
+        return info.st_dev, info.st_ino
+
+    try:
+        if not 0 < deadline_ns - time.monotonic_ns() <= 60_000_000_000:
+            raise OnboardingError('receiving_matrix_deadline_expired')
+        before = inspect()
+        identity = socket_identity()
+        remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+        if not 0 < remaining <= 60:
+            raise OnboardingError('receiving_matrix_deadline_expired')
+        with ConnectedProcessObserver() as owner, socket.socket(socket.AF_UNIX) as connection:
+            connection.settimeout(remaining)
+            connection.connect(str(socket_path))
+            with owner(connection):
+                process = owner.process
+                if process is None:
+                    raise OnboardingError('receiving_matrix_socket_scope_required')
+                if str(process['pid']) == before['manager']['MainPID']:
+                    scope = bind_service_parent_process(process, before)
+                else:
+                    scope = bind_admitted_service_process(
+                        {'process': process}, before, bind_process=bind_service_parent_process,
+                        derive_parent=True)
+                if inspect() != before or socket_identity() != identity:
+                    raise OnboardingError('receiving_matrix_predecessor_changed')
+                if time.monotonic_ns() >= deadline_ns:
+                    raise OnboardingError('receiving_matrix_deadline_expired')
+        return dict(schema='cluster-matrix-socket-predecessor/v1', **scope,
+                    socket_identity=list(identity), native_rpc='unobserved')
+    except (OSError, PresenceError, KeyError, TypeError) as error:
+        raise OnboardingError('receiving_matrix_socket_scope_required') from error
 
 
 class MatrixNativeService(MatrixGuestService):

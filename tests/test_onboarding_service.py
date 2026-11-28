@@ -7,6 +7,45 @@ from clusterctl.onboarding import OnboardingError
 from clusterctl.onboarding_service import UNIT, install
 
 
+def test_owner_socket_pins_real_peer_and_current_manager(tmp_path):
+    import os
+    import socket
+    import time
+    from clusterctl.onboarding_service import observe_managed_matrix_socket
+
+    path = tmp_path / 'matrix.sock'
+    cgroup = next(line[3:] for line in Path('/proc/self/cgroup').read_text().splitlines()
+                  if line.startswith('0::'))
+    manager = dict(ActiveState='active', MainPID=str(os.getpid()), ControlGroup=cgroup,
+                   InvocationID='fixture')
+    current = {'manager': manager}
+    def deadline():
+        return time.monotonic_ns() + 2_000_000_000
+
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(path))
+        listener.listen()
+        observed = observe_managed_matrix_socket(path, inspect=lambda: current, deadline_ns=deadline())
+        assert observed['process']['pid'] == os.getpid()
+        assert observed['native_rpc'] == 'unobserved'
+        accepted, _ = listener.accept()
+        with accepted:
+            assert accepted.recv(1) == b''
+
+        snapshots = iter((current, {'manager': {**manager, 'InvocationID': 'successor'}}))
+        with pytest.raises(OnboardingError, match='receiving_matrix_predecessor_changed'):
+            observe_managed_matrix_socket(path, inspect=lambda: next(snapshots), deadline_ns=deadline())
+
+        with pytest.raises(OnboardingError, match='receiving_matrix_process_scope_required'):
+            observe_managed_matrix_socket(path, inspect=lambda: {'manager': {**manager, 'ControlGroup': '/foreign'}},
+                                          deadline_ns=deadline())
+
+    alias = tmp_path / 'redirected.sock'
+    alias.symlink_to(path)
+    with pytest.raises(OnboardingError, match='receiving_matrix_socket_scope_required'):
+        observe_managed_matrix_socket(alias, inspect=lambda: current, deadline_ns=deadline())
+
+
 def test_guest_manager_uses_existing_system_unit_and_root_owned_fragment(tmp_path, monkeypatch):
     import hashlib
     import time

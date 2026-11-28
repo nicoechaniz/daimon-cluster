@@ -660,22 +660,27 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
     from .owner_process import ParentProcessPresence
     from .rebirth_host import RebirthHostError
     fields = {'schema','operation_id','profile','candidate','unit','journal','max_seconds'}
-    if (not isinstance(spec,dict) or set(spec) != fields
+    if (not isinstance(spec,dict) or set(spec) - {'manager'} != fields
             or spec['schema'] != 'cluster-native-profile-maintenance/v1'
             or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 180
             or not isinstance(spec['operation_id'],str)
             or re.fullmatch(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}',spec['operation_id']) is None
             or any(not isinstance(spec[key],str) or not Path(spec[key]).is_absolute()
                 or '..' in Path(spec[key]).parts for key in ('profile','unit','journal'))
-            or os.geteuid() != 0):
+            or spec.get('manager', 'system') not in ('system', 'user')):
+        raise RebirthHostError('rebirth_host_native_profile_maintenance_spec_required')
+    manager_kind = spec.get('manager', 'system')
+    if (manager_kind == 'system') != (os.geteuid() == 0):
         raise RebirthHostError('rebirth_host_native_profile_maintenance_spec_required')
     candidate = _profile(spec['candidate'])
     deadline = time.monotonic_ns()+spec['max_seconds']*1_000_000_000
     if deadline_ns is not None:
         deadline = min(deadline,deadline_ns)
     owner = ProfileOwner(Path(spec['profile']))
-    manager = MatrixProfileService(Path(spec['unit']),user=pwd.getpwuid(owner.uid).pw_name,
-        group=grp.getgrgid(owner.gid).gr_name)
+    if manager_kind == 'user' and owner.uid != os.geteuid():
+        raise RebirthHostError('rebirth_host_native_profile_maintenance_spec_required')
+    manager = MatrixProfileService(Path(spec['unit']), user=pwd.getpwuid(owner.uid).pw_name,
+        group=grp.getgrgid(owner.gid).gr_name, manager=manager_kind)
     journal = OperationJournal.existing(Path(spec['journal']))
     row = None if journal is None else journal.get(spec['operation_id'])
     intent = dict(native_profile_maintenance=spec)

@@ -934,3 +934,37 @@ def test_native_profile_prepares_only_changed_live_update_before_any_stop(tmp_pa
             rebirth_native.run_profile_maintenance(spec)
         assert calls == (['prepare'] if mode == 'preparation-failure' else
             ['prepare', 'status'] if mode == 'changed' else ['status'])
+
+
+def test_owner_local_profile_binds_user_unit_and_freezes_dropins(tmp_path, monkeypatch):
+    import pwd
+    from types import SimpleNamespace
+    from clusterctl import onboarding_release, onboarding_service
+
+    monkeypatch.setattr(os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(pwd, 'getpwuid', lambda uid: SimpleNamespace(pw_name='owner'))
+    unit = tmp_path / 'compaii-matrix-claude-itaca.service'
+    override = unit.with_name(unit.name + '.d') / '95-profile.conf'
+    values = dict(Id=unit.name, ActiveState='active', SubState='running', MainPID='12',
+        ControlGroup='/user.slice/' + unit.name, InvocationID='invocation',
+        FragmentPath=str(unit), DropInPaths=str(override), KillMode='mixed',
+        Result='success', User='', Group='')
+
+    def manager_command(argv):
+        assert argv[:4] == ['systemctl', '--user', 'show', unit.name]
+        return '\n'.join(f'{key}={value}' for key, value in values.items())
+
+    def regular(path, *, uid):
+        assert uid == 1000
+        assert path in (unit, override)
+        return str(path).encode()
+
+    monkeypatch.setattr(onboarding_release, 'regular', regular)
+    manager = onboarding_service.MatrixProfileService(unit, user='owner', group='owner',
+        manager='user', run=manager_command)
+    inspected = manager.inspect()
+    assert inspected['manager']['MainPID'] == '12'
+    assert set(inspected['dropins']) == {str(override)}
+    values['KillMode'] = 'process'
+    with pytest.raises(onboarding_service.OnboardingError, match='receiving_matrix_service_scope_required'):
+        manager.inspect()

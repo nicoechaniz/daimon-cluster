@@ -107,10 +107,35 @@ def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monke
 
 def test_command_requires_root_without_disclosing_spec_path(capsys, monkeypatch):
     monkeypatch.setattr('os.geteuid', lambda: 1000)
+    monkeypatch.setattr(being_seed, '_read', lambda *_, **__: pytest.fail('spec read before scope selection'))
     assert managed.main(['--spec', '/private/never-read.json']) == 1
     result = json.loads(capsys.readouterr().out)
     assert result['failure']['code'] == 'native_code_maintenance_root_required'
     assert 'private' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('selected,allowed', [
+    ({'schema': 'cluster-native-profile-maintenance/v1', 'manager': 'user'}, True),
+    ({'schema': 'cluster-native-profile-maintenance/v1', 'manager': 'system'}, False),
+    ({'schema': 'cluster-native-profile-maintenance/v1', 'manager': 'user',
+      'reader_completion': '/held/readers.json'}, False),
+    (spec(), False),
+])
+def test_user_profile_command_selects_only_local_maintenance(capsys, monkeypatch, selected, allowed):
+    monkeypatch.setattr('os.geteuid', lambda: 1000)
+    monkeypatch.setattr(being_seed, '_read', lambda *_, **__: selected)
+    calls = []
+
+    def update(value, *, check_only):
+        calls.append((value, check_only))
+        return {'qualified': True}
+
+    monkeypatch.setattr(managed, 'run_native_profile_update', update)
+    assert managed.main(['--user-profile', '--spec', '/held/owner.json', '--check-only']) == (0 if allowed else 1)
+    assert calls == ([(selected, True)] if allowed else [])
+    if not allowed:
+        assert json.loads(capsys.readouterr().out)['failure']['code'] == (
+            'native_code_maintenance_spec_required')
 
 
 def test_recovery_helper_prepares_without_changing_native_candidate_or_operation(monkeypatch):

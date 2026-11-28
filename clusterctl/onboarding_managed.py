@@ -1677,15 +1677,25 @@ def main(argv=None) -> int:
     from .onboarding import refusal_diagnostic
     parser = argparse.ArgumentParser(description='Bounded code/SDK maintenance of existing admitted bodies')
     parser.add_argument('--spec', type=Path, required=True,
-        help='retained root-owned private code or native-profile maintenance JSON')
+        help='retained private code or native-profile maintenance JSON')
+    parser.add_argument('--user-profile', action='store_true',
+        help='Select maintenance of the current owner\'s Matrix-only user service')
     parser.add_argument('--check-only', action='store_true',
         help='Inspect desired/loaded native code and retained operations without lifecycle effects')
     args = parser.parse_args(argv)
     try:
-        if os.geteuid() != 0:
+        root = os.geteuid() == 0
+        if not root and not args.user_profile:
             raise OnboardingError('native_code_maintenance_root_required')
+        if root and args.user_profile:
+            raise OnboardingError('native_code_maintenance_spec_required')
         spec = being_seed._read(args.spec, limit=65536)
-        if spec.get('schema') == 'cluster-native-profile-maintenance/v1':
+        native_profile = spec.get('schema') == 'cluster-native-profile-maintenance/v1'
+        if args.user_profile and not (
+                native_profile and spec.get('manager') == 'user'
+                and spec.get('reader_completion') is None):
+            raise OnboardingError('native_code_maintenance_spec_required')
+        if native_profile:
             result = run_native_profile_update(spec,check_only=args.check_only)
         else:
             result = run_code_status(spec) if args.check_only else run_code_update(spec)

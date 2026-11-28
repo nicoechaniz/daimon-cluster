@@ -175,13 +175,14 @@ class MatrixUserService:
             raise OnboardingError('receiving_matrix_service_scope_required')
         values = dict(lines)
         if (values['Id'] != self.unit.name or values['FragmentPath'] != str(self.unit)
-                or values['DropInPaths'] and not identity or values['KillMode'] != 'control-group'
+                or values['DropInPaths'] and not identity
+                or values['KillMode'] not in getattr(self, '_kill_modes', ('control-group',))
                 or not values['MainPID'].isdigit()
                 or values['ControlGroup'] and not values['ControlGroup'].endswith('/' + self.unit.name)
                 or any(values[key] != value for key, value in identity.items())):
             raise OnboardingError('receiving_matrix_service_scope_required')
         content = onboarding_release.regular(self.unit, uid=self._unit_uid)
-        if identity:
+        if identity.get('User'):
             guest_execution_identity(content, user=identity['User'], group=identity['Group'])
         result = dict(unit_sha256=hashlib.sha256(content).hexdigest(), manager=values)
         if identity and values['DropInPaths']:
@@ -361,14 +362,14 @@ class MatrixNativeService(MatrixGuestService):
 
 
 class MatrixProfileService(MatrixGuestService):
-    """An existing owner-selected H8 system unit with a private profile selector.
+    """An existing owner-selected H8 unit with a private profile selector.
 
-    Freeze its root-owned fragment/drop-ins and actual execution identity. This
+    Freeze its manager's fragment/drop-ins and actual execution identity. This
     adapter never edits units or overrides; the controller separately binds the
     authenticated child and its admission parent before any scoped lifecycle.
     """
 
-    def __init__(self, unit: Path, *, user: str, group: str, run=None):
+    def __init__(self, unit: Path, *, user: str, group: str, manager: str = 'system', run=None):
         if (not re.fullmatch(r'[a-z0-9][a-z0-9-]*-matrix-[a-z0-9-]+\.service', unit.name)
                 or any(not re.fullmatch(r'[a-z_][a-z0-9_-]*', value) for value in (user, group))):
             raise OnboardingError('qualified_matrix_service_required')
@@ -378,13 +379,25 @@ class MatrixProfileService(MatrixGuestService):
         self._manager_prefix = ['systemctl']
         self._unit_uid = 0
         self._required_execution = dict(User=user, Group=group)
+        if manager == 'user':
+            import pwd
+            if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != user:
+                raise OnboardingError('qualified_matrix_service_required')
+            self._manager_prefix.append('--user')
+            self._unit_uid = os.geteuid()
+            self._required_execution = dict(User='', Group='')
+            # H8 fences its child on supervisor exit. Lifecycle still waits
+            # for both authenticated process identities before writing.
+            self._kill_modes = ('control-group', 'mixed')
+        elif manager != 'system':
+            raise OnboardingError('qualified_matrix_service_required')
 
     def _guest_dropins(self, paths: str) -> dict:
         selected = [Path(path) for path in paths.split()]
         if (len(set(selected)) != len(selected)
                 or any(path.parent != self.unit.with_name(self.unit.name + '.d') for path in selected)):
             raise OnboardingError('receiving_matrix_service_scope_required')
-        return {str(path):hashlib.sha256(onboarding_release.regular(path, uid=0)).hexdigest()
+        return {str(path):hashlib.sha256(onboarding_release.regular(path, uid=self._unit_uid)).hexdigest()
             for path in selected}
 
 

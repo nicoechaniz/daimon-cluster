@@ -9,7 +9,7 @@ describe plural embodiments. The normative model is
 
 Status: PROPOSED (2026-08-01). Evidence for issue #3.
 Author: compaii@daimonmatrix. Inputs: ADR-001, host inventory
-(`docs/inventory/daimonmatrix-2026-07-31.md`), PLAN §8, tribe-bridge v1
+(the authorized operations register), PLAN §8, tribe-bridge v1
 governance lessons (root rotation, 2026-08-01).
 
 ## 1. Trust boundaries

@@ -286,7 +286,7 @@ def test_guest_accepts_only_exact_native_state_dependency(monkeypatch):
 def test_profile_service_freezes_existing_owner_and_overrides_without_editing(tmp_path, monkeypatch):
     import time
     from clusterctl import onboarding_service as service
-    unit = tmp_path/'compaii-matrix-itaca.service'
+    unit = tmp_path/'compaii-matrix-control-host.service'
     override = unit.with_name(unit.name+'.d')/'90-native-sdk-successor.conf'
     contents = {unit:b'[Service]\nUser=debian\nGroup=debian\n', override:b'[Service]\nExecStart=/existing/supervisor\n'}
     values = dict(Id=unit.name, ActiveState='active', SubState='running', MainPID='123',

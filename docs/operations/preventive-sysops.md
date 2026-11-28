@@ -52,11 +52,9 @@ transaction. Rollback restores selected code/config, never old runtime databases
 
 ## Maintenance coverage and owning operations
 
-Maintain explicit per-target coverage for all living hosts and bodies. Initial
-receiving targets are ITACA/CompAII, MEDUSA/Eko, Lordoftheflies, its four children,
-and the existing Oliva/Emma KVMs. A host observation does not substitute for its
-guests. Other catalog resources retain their own permission/workload boundaries;
-Mona is not a generic Sysops target under broad infrastructure permission.
+Maintain explicit per-target coverage for all living hosts and bodies. Resolve placement, job selections and receiving evidence from the authorized
+operations register. A host observation does not substitute for its guests.
+Each catalog resource retains its permission and workload boundaries.
 
 - OS/security: reuse signed indexes, maintained Debian/Ubuntu policy, existing
   daily vendor/advisory matching and the guarded package coordinator. Its reviewed
@@ -138,27 +136,3 @@ carry its own fresh observation timestamp. Refreshing availability does not
 refresh qualification. Ties require resolution.
 The pass emits `model_upgrades` plus stable semantic states. It makes no provider
 calls and cannot apply a model selection by itself.
-
-## Initial receiving evidence —22November2026
-
-The finite pass actually observed all nine selected targets in5.4seconds. Each
-ran a real package-database audit with exit0 and no pending dpkg recovery output;
-OS/package/index/filesystem/manual-tool locations were retained separately.
-This does not establish that no vulnerable packages or stale software exist.
-The configured ITACA hygiene job was fresh, so it was not repeated. No new timer
-or model execution was created; the broader cadence/adaptor coverage is pending.
-
-A separate same-account repair recovered the four children's existing native
-provider access from a currently valid source permitted by their original
-protected shared-account grant. Exact native workspace/account, provider quota,
-new model catalog and unchanged Codex/Matrix/Conversation process identities were
-verified on each body. No device login, account substitution, goal control or
-failed-input replay occurred. Consumed private ITACA credential staging was
-retired after all four verifications; original source/receiver stores remain.
-The generic authority/empty-cache helper is tested here; complete recurring
-source discovery/expiry/renewal and real scheduling are separate unfinished work.
-
-Native Sol6.2 defaults were then written through the existing version-checked
-native config writer on all eight bodies, retaining prior effort/provider and
-all other effective configuration. Loaded/used models and persisted per-session
-selections retain their own independent migration evidence and open work.

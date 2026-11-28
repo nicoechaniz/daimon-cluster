@@ -96,7 +96,7 @@ designed so OIDC slots in without changing clusterctl/clusterd internals.
 
 **Decision: ACCEPTED — Incus `dir` backend.**
 
-Evidence: `docs/inventory/daimonmatrix-2026-07-31.md` §4 — the host has a
+Evidence: the authorized operations register §4 — the host has a
 single 100 GiB QEMU disk fully allocated to ext4 root; no dedicated block
 device exists. Loop-backed ZFS is rejected per the issue's own constraint.
 

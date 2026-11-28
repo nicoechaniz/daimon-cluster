@@ -358,7 +358,7 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
         schema="cluster-native-profile-maintenance/v1",
         operation_id=spec()["operation_id"],
         profile=str(tmp_path / "profile.json"),
-        unit="/etc/systemd/system/compaii-matrix-itaca.service",
+        unit="/etc/systemd/system/compaii-matrix-control-host.service",
         journal=str(tmp_path / "native-journal"),
         candidate={"code_digest": "b" * 64},
         max_seconds=60,

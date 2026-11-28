@@ -21,15 +21,14 @@ import time
 
 if __package__:
     from . import children_package_selection as selection
-    from .children_daily import atomic, command, footprint
+    from .children_daily import atomic, command, configured_targets, footprint
     from .children_package_guard import Deferred, BROTLI, reviewed_packages, verify_trigger_runtime, private_json, manifest_packages, idle_package_scope, verify_archive
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import children_package_selection as selection
-    from children_daily import atomic, command, footprint
+    from children_daily import atomic, command, configured_targets, footprint
     from children_package_guard import Deferred, BROTLI, reviewed_packages, verify_trigger_runtime, private_json, manifest_packages, idle_package_scope, verify_archive
 
-CHILDREN = ('pixin', 'calipso', 'c-137', 'noodles')
 SERVICES = ('daimon-onboarding-codex.service', 'children-conversation-native.service',
             'children-conversation-web.service')
 TERMINAL = {'up_to_date', 'complete', 'deferred', 'report_only'}
@@ -294,11 +293,10 @@ def maintain(policy, state, *, install=False, occurrence=None, run=command, comm
         raise
 
 
-def fleet(state, run=command, wait=time.sleep, now=time.monotonic, duration=600, include_brotli=False):
+def fleet(state, targets, run=command, wait=time.sleep, now=time.monotonic, duration=600, include_brotli=False):
     report = {'schema':'children-daily-packages/v1', 'at':int(time.time()), 'targets':{}}
     deadline = now()+duration
-    for name in CHILDREN:
-        instance = 'dm-'+name
+    for name, instance in targets:
         prefix = ['incus', 'exec', instance, '--']
         try:
             quota = json.loads(run(['incus', 'query', '/1.0/storage-pools/fast/volumes/container/'+instance+'/state'], seconds=10, limit=8192))['usage']
@@ -361,7 +359,8 @@ def main():
     parser.add_argument('--state',type=Path,required=True)
     parser.add_argument('--policy',type=Path)
     parser.add_argument('--install',action='store_true')
-    parser.add_argument('--fleet',action='store_true')
+    parser.add_argument('--fleet', action='store_true')
+    parser.add_argument('--fleet-config', type=Path, default=Path('/etc/children-maintenance/daily-inventory.json'))
     parser.add_argument('--with-brotli',action='store_true')
     args=parser.parse_args()
     os.umask(0o077)
@@ -375,7 +374,12 @@ def main():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if footprint(state)>384*1024*1024:
             raise Deferred('package_state_capacity')
-        result=fleet(state,include_brotli=args.with_brotli) if args.fleet else maintain(private_json(args.policy,0),state,install=args.install)
+        if args.fleet:
+            guests = configured_targets(private_json(args.fleet_config, 0))[1:]
+            targets = [(guest['id'], guest['instance']) for guest in guests]
+            result = fleet(state, targets, include_brotli=args.with_brotli)
+        else:
+            result = maintain(private_json(args.policy, 0), state, install=args.install)
     print(json.dumps(result,sort_keys=True))
     return 0 if result.get('complete') or result.get('phase') in {'up_to_date','complete','report_only'} else 2
 

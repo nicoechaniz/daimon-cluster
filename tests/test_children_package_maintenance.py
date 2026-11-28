@@ -15,6 +15,9 @@ from tools import children_package_maintenance as m
 from tools.children_package_guard import Deferred
 
 
+FLEET_TARGETS = [(name, 'dm-' + name) for name in ('guest-a', 'guest-b', 'guest-c', 'guest-d')]
+
+
 @pytest.fixture
 def transaction(tmp_path):
     state = tmp_path/'state';state.mkdir(mode=0o700)
@@ -182,7 +185,7 @@ def test_fleet_observes_live_guest_then_reports_current_occurrence(tmp_path):
         if 'start' in argv:started.append(name);return b''
         if 'cat' in argv:return json.dumps({'schema':'children-package-maintenance/v1','occurrence':today,'phase':'up_to_date','write_requested':False}).encode()
         raise AssertionError(argv)
-    result=m.fleet(tmp_path,run=run,wait=lambda seconds:None)
+    result=m.fleet(tmp_path, FLEET_TARGETS,run=run,wait=lambda seconds:None)
     assert result['complete'] and len(result['targets'])==4 and not started
 
 
@@ -190,7 +193,7 @@ def test_fleet_quota_failure_cannot_start_guest(tmp_path):
     def run(argv,**kwargs):
         assert argv[:2]==['incus','query']
         return json.dumps({'usage':{'total':8*m.GIB,'used':7*m.GIB}}).encode()
-    result=m.fleet(tmp_path,run=run)
+    result=m.fleet(tmp_path, FLEET_TARGETS,run=run)
     assert not result['complete']
     assert all(row['error']=='insufficient_root_quota_headroom' for row in result['targets'].values())
 
@@ -200,9 +203,9 @@ def test_fleet_timeout_never_stops_or_restarts_a_running_guest(tmp_path):
         if argv[:2]==['incus','query']:return json.dumps({'usage':{'total':8*m.GIB,'used':0}}).encode()
         assert 'show' in argv
         return b'ActiveState=active\nLoadState=loaded\nExecMainStatus=0\n'
-    row=m.fleet(tmp_path,run=run,now=lambda:100,duration=0)
+    row=m.fleet(tmp_path, FLEET_TARGETS,run=run,now=lambda:100,duration=0)
     assert not row['complete'] and len(row['targets'])==1
-    assert row['targets']['pixin']['error']=='guest_writer_still_running_observation_ended'
+    assert row['targets']['guest-a']['error']=='guest_writer_still_running_observation_ended'
 
 
 def test_precommit_rechecks_plan_hold_config_and_service_health(transaction):
@@ -293,7 +296,7 @@ def test_fleet_library_failure_not_hidden_by_current_browser_receipt(tmp_path):
                                'phase':'deferred' if 'brotli-selection' in argv[-1] else 'complete',
                                'write_requested':False}).encode()
         raise AssertionError(argv)
-    result=m.fleet(tmp_path,run=run,include_brotli=True)
+    result=m.fleet(tmp_path, FLEET_TARGETS,run=run,include_brotli=True)
     assert not result['complete'] and len(result['targets'])==4
     assert all(v['error']=='guest_library_coverage_degraded' for v in result['targets'].values())
 

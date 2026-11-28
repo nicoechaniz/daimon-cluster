@@ -40,6 +40,18 @@ class Opener:
 
 
 class DailyTests(unittest.TestCase):
+    def test_target_selection_uses_configured_ids_and_distinct_instances(self):
+        host = {'id': 'host-a', 'instance': None}
+        guests = [{'id': f'guest-{i}', 'instance': f'instance-{i}'} for i in range(4)]
+        config = {'schema': 'cluster-children-daily/v1', 'targets': [host, *guests]}
+        self.assertEqual(daily.configured_targets(config)[1:], guests)
+
+        for invalid in ({'id': 'guest-0', 'instance': 'instance-5'},
+                        {'id': 'guest-5', 'instance': 'instance-0'},
+                        {'id': 'guest-5', 'instance': '../instance-5'}):
+            with self.assertRaises(ValueError):
+                daily.configured_targets({**config, 'targets': [host, *guests[:3], invalid]})
+
     def test_command_caps_combined_stderr_and_stdout(self):
         with self.assertRaises(daily.LimitError):
             daily.command([sys.executable, '-c', 'import sys;sys.stderr.write("x"*2048)'], limit=128)
@@ -78,38 +90,38 @@ class DailyTests(unittest.TestCase):
 
     def test_offline_guest_and_unavailable_feed_remain_unassessed(self):
         with tempfile.TemporaryDirectory() as temp:
-            config={'state':temp,'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            config={'state':temp,'targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             with patch.object(daily,'validate'), patch.object(daily,'fetch_feed',side_effect=OSError), \
                     patch.object(daily,'command',side_effect=ValueError('offline')):
                 result=daily.collect(config)
             self.assertEqual(result['source']['state'],'unavailable')
-            self.assertEqual(result['targets']['pixin']['debian_advisories'],'unassessed')
+            self.assertEqual(result['targets']['guest-a']['debian_advisories'],'unassessed')
             self.assertEqual(result['coverage'],'partial')
             self.assertEqual(json.loads((Path(temp)/'current.json').read_text()),result)
 
     def test_matcher_failure_preserves_successful_inventory_as_separate_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
-            config={'state':temp,'scanner':'unused','targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            config={'state':temp,'scanner':'unused','targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
                       'package_status':'Package: fixture\nVersion: 1\n'}
             with patch.object(daily,'validate'), patch.object(daily,'fetch_feed',return_value=b'feed'), \
                     patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),ValueError('matcher')]):
                 result=daily.collect(config)
-            self.assertEqual(result['targets']['pixin']['inventory'],'observed')
-            self.assertEqual(result['targets']['pixin']['debian_advisories'],'unassessed')
+            self.assertEqual(result['targets']['guest-a']['inventory'],'observed')
+            self.assertEqual(result['targets']['guest-a']['debian_advisories'],'unassessed')
             self.assertEqual((Path(temp)/'no-suppressions').read_text(),'VERSION 0\n')
 
     def test_cleanup_failure_never_discards_real_inventory_or_advisory_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             config={'state':temp,'scanner':'unused','compiler_cleanup_enabled':True,
-                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+                    'targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
                       'package_status':'Package: fixture\nVersion: 1\n'}
             with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),\
                  patch.object(daily,'command',side_effect=[ValueError('cleanup failed'),
                    json.dumps(observed).encode(),b'CVE-fictional fixture\n']):
                 result=daily.collect(config)
-            value=result['targets']['pixin']
+            value=result['targets']['guest-a']
             self.assertEqual(value['inventory'],'observed')
             self.assertEqual(value['debian_advisories'],'matched')
             self.assertEqual(value['compiler_cleanup']['status'],'unavailable')
@@ -117,7 +129,7 @@ class DailyTests(unittest.TestCase):
     def test_selected_cleanup_uses_its_own_finite_guest_unit(self):
         with tempfile.TemporaryDirectory() as temp:
             config={'state':temp,'scanner':'unused','compiler_cleanup_enabled':True,
-                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+                    'targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
                       'package_status':'Package: fixture\nVersion: 1\n'}
             cleanup={'schema':'children-cache-cleanup/v1','status':'complete','cache_dirs_removed':0}
@@ -125,7 +137,7 @@ class DailyTests(unittest.TestCase):
                  patch.object(daily,'command',side_effect=[b'',json.dumps(cleanup).encode(),
                    json.dumps(observed).encode(),b'']) as calls:
                 result=daily.collect(config)
-            self.assertEqual(result['targets']['pixin']['compiler_cleanup'],cleanup)
+            self.assertEqual(result['targets']['guest-a']['compiler_cleanup'],cleanup)
             first=calls.call_args_list[0]
             self.assertIn('children-cache-cleanup.service',first.args[0])
             self.assertEqual(first.kwargs['seconds'],100)
@@ -134,15 +146,15 @@ class DailyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             pending=Path(temp)/'pending-evidence';pending.write_bytes(b'keep pending')
             config={'state':temp,'scanner':'unused','compiler_cleanup_enabled':False,
-                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+                    'targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
                       'package_status':'Package: fixture\nVersion: 1\n'}
             with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),\
                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'']) as calls:
                 result=daily.collect(config)
             self.assertEqual(calls.call_count,2)
-            self.assertEqual(result['targets']['pixin']['debian_advisories'],'matched')
-            self.assertNotIn('compiler_cleanup',result['targets']['pixin'])
+            self.assertEqual(result['targets']['guest-a']['debian_advisories'],'matched')
+            self.assertNotIn('compiler_cleanup',result['targets']['guest-a'])
             self.assertEqual(pending.read_bytes(),b'keep pending')
 
 
@@ -161,10 +173,10 @@ class BrowserObservationTests(unittest.TestCase):
     def test_standby_read_contains_no_lifecycle_or_tab_command(self):
         reply={'schema':'children-browser-status/v1','state':'standby','intentional':True}
         with patch.object(daily,'command',return_value=json.dumps(reply).encode()) as call:
-            result=daily.browser_status('dm-pixin',self.selection)
+            result=daily.browser_status('dm-guest-a',self.selection)
         self.assertEqual(result['state'],'standby')
         argv=call.call_args.args[0]
-        self.assertEqual(argv[:4],['incus','exec','dm-pixin','--'])
+        self.assertEqual(argv[:4],['incus','exec','dm-guest-a','--'])
         source=argv[-1]
         self.assertIn("str(p),'status'",source)
         self.assertIn("hashlib.sha256(p.read_bytes())",source)
@@ -177,33 +189,33 @@ class BrowserObservationTests(unittest.TestCase):
                'bridge':{'running':True,'extension_connected':True,'version':'v2.0.22'},
                'arbitrary_private_field':'never propagate'}
         with patch.object(daily,'command',return_value=json.dumps(reply).encode()):
-            result=daily.browser_status('dm-pixin',self.selection)
+            result=daily.browser_status('dm-guest-a',self.selection)
         self.assertEqual(result['observation'],'connection-metadata-only')
         self.assertNotIn('arbitrary_private_field',result)
         for bridge in ({'running':True,'extension_connected':False,'version':'v2.0.22'},
                        {'running':True,'extension_connected':True,'version':'2.0.23'}):
             with patch.object(daily,'command',return_value=json.dumps(dict(reply,bridge=bridge)).encode()):
-                with self.assertRaises(ValueError):daily.browser_status('dm-pixin',self.selection)
+                with self.assertRaises(ValueError):daily.browser_status('dm-guest-a',self.selection)
 
     def test_unknown_and_false_standby_are_not_green(self):
         for reply in ({'schema':'children-browser-status/v1','state':'standby','intentional':False},
                       {'schema':'children-browser-status/v1','state':'unknown'},
                       {'schema':'other','state':'standby','intentional':True},[]):
             with patch.object(daily,'command',return_value=json.dumps(reply).encode()):
-                with self.assertRaises(ValueError):daily.browser_status('dm-pixin',self.selection)
+                with self.assertRaises(ValueError):daily.browser_status('dm-guest-a',self.selection)
 
     def test_unavailable_browser_keeps_inventory_findings_and_pending_work(self):
         with tempfile.TemporaryDirectory() as temp:
             pending=Path(temp)/'pending-evidence';pending.write_bytes(b'keep')
             config={'state':temp,'scanner':'unused','browser_status':self.selection,
-                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+                    'targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
                       'package_status':'Package: fixture\nVersion: 1\n'}
             with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'browser_status',side_effect=ValueError('unavailable')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'CVE-fictional\n']):
                 result=daily.collect(config)
-            self.assertEqual(result['targets']['pixin']['browser']['state'],'unavailable')
-            self.assertEqual(result['targets']['pixin']['inventory'],'observed')
-            self.assertEqual(result['targets']['pixin']['debian_advisories'],'matched')
+            self.assertEqual(result['targets']['guest-a']['browser']['state'],'unavailable')
+            self.assertEqual(result['targets']['guest-a']['inventory'],'observed')
+            self.assertEqual(result['targets']['guest-a']['debian_advisories'],'matched')
             self.assertEqual(pending.read_bytes(),b'keep')
             with patch.object(sys,'argv',['daily','--config',str(Path(temp)/'config.json')]),                  patch.object(daily,'collect',return_value=result):
                 (Path(temp)/'config.json').write_text(json.dumps(config))
@@ -211,24 +223,24 @@ class BrowserObservationTests(unittest.TestCase):
 
     def test_omitting_browser_selection_does_not_run_its_reader(self):
         with tempfile.TemporaryDirectory() as temp:
-            config={'state':temp,'scanner':'unused','targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            config={'state':temp,'scanner':'unused','targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
                       'package_status':'Package: fixture\nVersion: 1\n'}
             with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'browser_status',side_effect=AssertionError('disabled reader')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'']):
                 result=daily.collect(config)
-            self.assertNotIn('browser',result['targets']['pixin'])
+            self.assertNotIn('browser',result['targets']['guest-a'])
 
 
 class ApplicationObservationTests(unittest.TestCase):
     selection={'helper':'/opt/children-maintenance/qualified/reader.py','sha256':'a'*64,
-               'units':{n:['own.service'] for n in ['lordoftheflies','pixin','calipso','c-137','noodles']}}
+               'units':{n:['own.service'] for n in ['fleet-host','guest-a','guest-b','guest-c','guest-d']}}
 
     def test_network_selection_is_explicit_and_reaches_existing_reader(self):
         chosen=dict(self.selection,network_listeners=True)
         daily.validate_application_selection(chosen)
         value={'schema':'children-application-inventory/v1','units':{'own.service':{'state':'observed'}}}
         with patch.object(daily,'command',return_value=json.dumps(value).encode()) as call:
-            daily.application_inventory('pixin','dm-pixin',chosen)
+            daily.application_inventory('guest-a','dm-guest-a',chosen)
         self.assertIn("options['include_network_listeners']=True",call.call_args.args[0][-1])
         with self.assertRaises(ValueError):
             daily.validate_application_selection(dict(self.selection,network_listeners='yes'))
@@ -237,24 +249,24 @@ class ApplicationObservationTests(unittest.TestCase):
         value={'schema':'children-application-inventory/v1','units':{'own.service':{'state':'observed'}}}
         chosen=dict(self.selection,browser_components=True)
         with patch.object(daily,'command',return_value=json.dumps(value).encode()):
-            self.assertEqual(daily.application_inventory('pixin','dm-pixin',chosen)['state'],'unavailable')
-            self.assertEqual(daily.application_inventory('lordoftheflies',None,chosen)['state'],'observed')
+            self.assertEqual(daily.application_inventory('guest-a','dm-guest-a',chosen)['state'],'unavailable')
+            self.assertEqual(daily.application_inventory('fleet-host',None,chosen)['state'],'observed')
         with self.assertRaises(ValueError):daily.validate_application_selection(dict(self.selection,browser_components='yes'))
 
     def test_application_selection_is_explicit_bounded_and_not_shell(self):
         daily.validate_application_selection(self.selection)
         for value in ({},dict(self.selection,units={}),
-                      dict(self.selection,units={**self.selection['units'],'pixin':['own.service; bad']}),
-                      dict(self.selection,units={**self.selection['units'],'pixin':[{}]})):
+                      dict(self.selection,units={**self.selection['units'],'guest-a':['own.service; bad']}),
+                      dict(self.selection,units={**self.selection['units'],'guest-a':[{}]})):
             with self.assertRaises(ValueError):daily.validate_application_selection(value)
 
     def test_reader_uses_own_bounded_native_read_job_and_keeps_partial_data(self):
         value={'schema':'children-application-inventory/v1','units':{'own.service':{'state':'unavailable','reason':'fixture'}},'coverage':'partial'}
         with patch.object(daily,'command',return_value=json.dumps(value).encode()) as call:
-            result=daily.application_inventory('pixin','dm-pixin',self.selection)
+            result=daily.application_inventory('guest-a','dm-guest-a',self.selection)
         self.assertEqual(result['state'],'unavailable');self.assertEqual(result['units'],value['units'])
         argv=call.call_args.args[0]
-        self.assertEqual(argv[:4],['incus','exec','dm-pixin','--'])
+        self.assertEqual(argv[:4],['incus','exec','dm-guest-a','--'])
         self.assertIn('RuntimeMaxSec=40',argv);self.assertIn('-S',argv)
         self.assertIn('hashlib.sha256(p.read_bytes())',argv[-1])
         self.assertEqual(call.call_args.kwargs,{'seconds':55,'limit':384*1024})
@@ -262,28 +274,28 @@ class ApplicationObservationTests(unittest.TestCase):
     def test_application_read_failure_keeps_other_daily_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             config={'state':temp,'scanner':'unused','application_inventory':self.selection,
-                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+                    'targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
                       'package_status':'Package: fixture\nVersion: 1\n'}
             with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'application_inventory',side_effect=ValueError('fixture')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'CVE-fictional\n']):
                 result=daily.collect(config)
-            self.assertEqual(result['targets']['pixin']['applications']['state'],'unavailable')
-            self.assertEqual(result['targets']['pixin']['debian_advisories'],'matched')
+            self.assertEqual(result['targets']['guest-a']['applications']['state'],'unavailable')
+            self.assertEqual(result['targets']['guest-a']['debian_advisories'],'matched')
 
     def test_disabled_stage_does_not_run_a_reader(self):
         with tempfile.TemporaryDirectory() as temp:
-            config={'state':temp,'scanner':'unused','targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            config={'state':temp,'scanner':'unused','targets':[{'id':'guest-a','instance':'dm-guest-a'}]}
             observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},'package_status':'Package: fixture\nVersion: 1\n'}
             with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'application_inventory',side_effect=AssertionError('disabled')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'']):
                 result=daily.collect(config)
-            self.assertNotIn('applications',result['targets']['pixin'])
+            self.assertNotIn('applications',result['targets']['guest-a'])
 
 
 class CleanupReceiptReadTests(unittest.TestCase):
     def test_malformed_read_reconciles_receipt_without_another_mutation(self):
         receipt={'schema':'children-cache-cleanup/v1','status':'complete'}
         with patch.object(daily,'command',side_effect=[b'',json.dumps(receipt).encode()]) as calls:
-            result=daily.cleanup_receipt('dm-calipso')
+            result=daily.cleanup_receipt('dm-guest-b')
         self.assertEqual(result['status'],'complete')
         self.assertEqual(result['receipt_read_recovery']['bytes'],0)
         self.assertEqual(calls.call_count,2)
@@ -293,7 +305,7 @@ class CleanupReceiptReadTests(unittest.TestCase):
 
     def test_second_bad_read_stays_unavailable(self):
         with patch.object(daily,'command',return_value=b'not-json') as calls:
-            with self.assertRaises(ValueError):daily.cleanup_receipt('dm-calipso')
+            with self.assertRaises(ValueError):daily.cleanup_receipt('dm-guest-b')
         self.assertEqual(calls.call_count,2)
 
 
@@ -348,7 +360,7 @@ class KnownExploitationTests(unittest.TestCase):
         from types import SimpleNamespace
         good={'schema':'children-known-exploitation/v1','state':'matched','checked':100,
               'source_sha256':'previous','needs_triage':True,'matches':[]}
-        report={'targets':{n:{'debian_advisories':'matched'} for n in ('pixin','calipso','c-137','noodles')}}
+        report={'targets':{n:{'debian_advisories':'matched'} for n in ('guest-a','guest-b','guest-c','guest-d')}}
         fake=SimpleNamespace(match=lambda *a:dict(good),chromium_context=lambda *a:{},
                              assess_chromium=lambda *a:(_ for _ in ()).throw(OSError('vendor unavailable')))
         with tempfile.TemporaryDirectory() as temp,patch.object(daily,'load_public_matcher',return_value=fake):
@@ -365,14 +377,14 @@ class KnownExploitationTests(unittest.TestCase):
         from types import SimpleNamespace
         good={'schema':'children-known-exploitation/v1','state':'matched','checked':100,
               'source_sha256':'previous','needs_triage':True,'matches':[{'cve':'CVE-2026-12345'}]}
-        report={'targets':{'pixin':{'debian_advisories':'matched'}}}
+        report={'targets':{'guest-a':{'debian_advisories':'matched'}}}
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             with patch.object(daily,'load_public_matcher',return_value=SimpleNamespace(match=lambda *a:good)):
-                self.assertEqual(daily.known_exploitation(self.selection,{'pixin':[]},report,root),good)
+                self.assertEqual(daily.known_exploitation(self.selection,{'guest-a':[]},report,root),good)
             original=(root/'known-exploitation/current.json').read_bytes()
             with patch.object(daily,'load_public_matcher',side_effect=ValueError('bad hash')):
-                failed=daily.known_exploitation(self.selection,{'pixin':[]},report,root)
+                failed=daily.known_exploitation(self.selection,{'guest-a':[]},report,root)
             self.assertEqual(failed['state'],'unavailable')
             self.assertEqual(failed['last_success_checked'],100)
             self.assertEqual((root/'known-exploitation/current.json').read_bytes(),original)
@@ -382,7 +394,7 @@ class KnownExploitationTests(unittest.TestCase):
 
     def test_osv_aliases_bind_current_candidates_but_withdrawn_records_do_not(self):
         from types import SimpleNamespace
-        report={'targets':{'pixin':{'debian_advisories':'matched'}},'public_advisories':{
+        report={'targets':{'guest-a':{'debian_advisories':'matched'}},'public_advisories':{
             'state':'matched','records':[{'id':'GHSA-test','aliases':['CVE-2026-12345'],'withdrawn':None},
                 {'id':'CVE-2026-99999','aliases':[],'withdrawn':'yesterday'}]}}
         seen=[]
@@ -390,8 +402,8 @@ class KnownExploitationTests(unittest.TestCase):
             seen.append(values)
             return {'schema':'children-known-exploitation/v1','state':'matched','checked':100,'needs_triage':False}
         with tempfile.TemporaryDirectory() as temp, patch.object(daily,'load_public_matcher',return_value=SimpleNamespace(match=match)):
-            daily.known_exploitation(self.selection,{'pixin':[]},report,Path(temp))
-        self.assertEqual(seen,[{'pixin':[],'public-python':['CVE-2026-12345']}])
+            daily.known_exploitation(self.selection,{'guest-a':[]},report,Path(temp))
+        self.assertEqual(seen,[{'guest-a':[],'public-python':['CVE-2026-12345']}])
 
     def test_matches_or_unavailable_source_leave_daily_pending(self):
         for state,triage in [('matched',True),('unavailable',False)]:
@@ -410,7 +422,7 @@ if __name__ == '__main__':
 class CurrentPhaseEvidenceTests(unittest.TestCase):
     def test_completed_observation_does_not_clear_pending_security_assessment(self):
         result = {'coverage': 'partial', 'source': {'state': 'fresh'},
-            'targets': {'pixin': {'debian_advisories': 'matched',
+            'targets': {'guest-a': {'debian_advisories': 'matched',
                 'compiler_cleanup': {'status': 'complete'}, 'browser': {'state': 'standby'},
                 'applications': {'state': 'observed'}}},
             'public_advisories': {'state': 'matched', 'needs_triage': True},
@@ -423,7 +435,7 @@ class CurrentPhaseEvidenceTests(unittest.TestCase):
             result[key]['state'] = 'unavailable'
             self.assertFalse(daily.observation_complete(result))
             result[key]['state'] = 'matched'
-        result['targets']['pixin']['applications']['state'] = 'unavailable'
+        result['targets']['guest-a']['applications']['state'] = 'unavailable'
         self.assertFalse(daily.observation_complete(result))
         result['targets'] = {}
         self.assertFalse(daily.observation_complete(result))
@@ -431,17 +443,17 @@ class CurrentPhaseEvidenceTests(unittest.TestCase):
     def test_changed_deployment_selection_does_not_mask_other_failures(self):
         unit = 'conversation.service'
         manifest = {'sha256': 'pin'}
-        config = {'targets': [{'id': 'pixin', 'instance': 'dm-pixin'}],
-                  'application_inventory': {'deployment_manifests': {'pixin': manifest},
-                                            'units': {'pixin': [unit]}}}
+        config = {'targets': [{'id': 'guest-a', 'instance': 'dm-guest-a'}],
+                  'application_inventory': {'deployment_manifests': {'guest-a': manifest},
+                                            'units': {'guest-a': [unit]}}}
         observed_unit = {'state': 'observed', 'deployment': {'state': 'selection-changed'}}
         inventory = {'state': 'observed', 'deployment_manifest_sha256': 'pin',
                      'deployment_selection_units': [unit], 'units': {unit: observed_unit}}
         report = {'source': {'state': 'fresh'},
-                  'targets': {'pixin': {'debian_advisories': 'matched', 'applications': inventory}}}
+                  'targets': {'guest-a': {'debian_advisories': 'matched', 'applications': inventory}}}
         report['phases'] = daily.phase_observations(config, report)
         self.assertEqual(report['phases']['selected_deployments']['state'], 'selection-changed')
-        self.assertEqual(report['phases']['selected_deployments']['selection_changed_targets'], ['pixin'])
+        self.assertEqual(report['phases']['selected_deployments']['selection_changed_targets'], ['guest-a'])
         self.assertTrue(daily.observation_complete(report))
         observed_unit['state'] = 'unavailable'
         report['phases'] = daily.phase_observations(config, report)
@@ -449,7 +461,7 @@ class CurrentPhaseEvidenceTests(unittest.TestCase):
         self.assertFalse(daily.observation_complete(report))
 
     def test_current_cleanup_and_browser_success_survive_pending_advisory_triage(self):
-        names = ['pixin', 'calipso', 'c-137', 'noodles']
+        names = ['guest-a', 'guest-b', 'guest-c', 'guest-d']
         config = {'targets': [{'id': 'host', 'instance': None}] +
                   [{'id': name, 'instance': 'dm-' + name} for name in names],
                   'application_inventory': {'selected': True}, 'compiler_cleanup_enabled': True,
@@ -468,11 +480,11 @@ class CurrentPhaseEvidenceTests(unittest.TestCase):
         self.assertEqual(result['known_exploitation']['applicability'], 'pending')
         self.assertEqual(result['package_transactions']['state'], 'external-producer')
         self.assertEqual(result['incident_delivery_and_missed_runs']['state'], 'external-observer')
-        del report['targets']['calipso']
+        del report['targets']['guest-b']
         changed = daily.phase_observations(config, report)
         for key in ('debian_advisories', 'application_inventory', 'compiler_cleanup', 'browser_metadata'):
             self.assertEqual(changed[key]['state'], 'incomplete')
-            self.assertEqual(changed[key]['unavailable_targets'], ['calipso'])
+            self.assertEqual(changed[key]['unavailable_targets'], ['guest-b'])
 
     def test_disabled_and_empty_phases_do_not_claim_observed_success(self):
         report = {'targets': {}, 'public_advisories': {'state': 'matched', 'needs_triage': False}}
@@ -480,11 +492,11 @@ class CurrentPhaseEvidenceTests(unittest.TestCase):
         self.assertEqual(result['debian_advisories']['state'], 'incomplete')
         self.assertEqual(result['compiler_cleanup']['state'], 'not-selected')
         self.assertEqual(result['public_advisories']['state'], 'not-selected')
-        config = {'targets': [{'id': 'pixin', 'instance': 'dm-pixin'}],
+        config = {'targets': [{'id': 'guest-a', 'instance': 'dm-guest-a'}],
                   'compiler_cleanup_enabled': True, 'public_advisories': {'selected': True}}
         report['public_advisories'] = {'state': 'unavailable', 'last_success_checked': 1}
         result = daily.phase_observations(config, report)
-        self.assertEqual(result['compiler_cleanup']['unavailable_targets'], ['pixin'])
+        self.assertEqual(result['compiler_cleanup']['unavailable_targets'], ['guest-a'])
         self.assertEqual(result['public_advisories']['applicability'], 'unavailable')
 
 
@@ -560,39 +572,39 @@ class SelectedMaliciousObservationTests(unittest.TestCase):
         phase = daily.phase_observations({'targets': [], 'public_advisories': {'selected': True}},
                                          {'targets': {}, 'public_advisories': public})
         self.assertEqual(phase['selected_public_python_malicious']['state'], 'observed')
-        failed = {'source': {'state': 'fresh'}, 'targets': {'pixin': {'debian_advisories': 'matched'}},
+        failed = {'source': {'state': 'fresh'}, 'targets': {'guest-a': {'debian_advisories': 'matched'}},
                   'phases': {'selected_public_python_malicious': {'state': 'incomplete'}}}
         self.assertFalse(daily.observation_complete(failed))
 
 
 class SelectedDeploymentPhaseTests(unittest.TestCase):
     def test_selected_network_requires_every_main_process_and_preserves_unknown_exposure(self):
-        config={'targets':[{'id':'pixin','instance':'dm-pixin'}], 'application_inventory':{
-            'network_listeners':True,'units':{'pixin':['web.service','native.service']}}}
+        config={'targets':[{'id':'guest-a','instance':'dm-guest-a'}], 'application_inventory':{
+            'network_listeners':True,'units':{'guest-a':['web.service','native.service']}}}
         units={name:{'state':'observed','network_listeners':{'state':'observed','listeners':[]}}
             for name in ('web.service','native.service')}
-        report={'targets':{'pixin':{'applications':{'state':'observed','units':units}}}}
+        report={'targets':{'guest-a':{'applications':{'state':'observed','units':units}}}}
         self.assertEqual(daily.phase_observations(config,report)['selected_main_process_listeners']['state'],'observed')
         for gap in (None,{},'unavailable'):
             units['native.service']['network_listeners']=gap
             self.assertEqual(daily.phase_observations(config,report)['selected_main_process_listeners']['state'],'incomplete')
         del config['application_inventory']['network_listeners']
         self.assertEqual(daily.phase_observations(config,report)['selected_main_process_listeners']['state'],'not-selected')
-        failed={'source':{'state':'fresh'},'targets':{'pixin':{'debian_advisories':'matched'}},
+        failed={'source':{'state':'fresh'},'targets':{'guest-a':{'debian_advisories':'matched'}},
                 'phases':{'selected_main_process_listeners':{'state':'incomplete'}}}
         self.assertFalse(daily.observation_complete(failed))
 
     def test_selected_files_do_not_claim_unselected_units_or_healthy_changed_process(self):
-        config={'targets':[{'id':'pixin','instance':'dm-pixin'}], 'application_inventory':{
-            'units':{'pixin':['native.service','web.service','supervisor.service']},
-            'deployment_manifests':{'pixin':{'path':'/etc/children-maintenance/deployments.json','sha256':'a'*64}}}}
+        config={'targets':[{'id':'guest-a','instance':'dm-guest-a'}], 'application_inventory':{
+            'units':{'guest-a':['native.service','web.service','supervisor.service']},
+            'deployment_manifests':{'guest-a':{'path':'/etc/children-maintenance/deployments.json','sha256':'a'*64}}}}
         units={u:{'state':'observed','deployment':{'state':'verified'}} for u in ('native.service','web.service')}
         app={'state':'observed','deployment_manifest_sha256':'a'*64,
              'deployment_selection_units':['native.service','web.service'],'units':units}
-        report={'targets':{'pixin':{'applications':app}}}
+        report={'targets':{'guest-a':{'applications':app}}}
         phase=daily.phase_observations(config,report)['selected_deployments']
         self.assertEqual(phase['state'],'observed')
-        self.assertEqual(phase['unselected_units'],['pixin:supervisor.service'])
+        self.assertEqual(phase['unselected_units'],['guest-a:supervisor.service'])
         self.assertIn('unassessed',phase['scope'])
         units['web.service']['state']='unavailable'
         self.assertEqual(daily.phase_observations(config,report)['selected_deployments']['state'],'incomplete')
@@ -601,9 +613,9 @@ class SelectedDeploymentPhaseTests(unittest.TestCase):
         self.assertEqual(daily.phase_observations(config,report)['selected_deployments']['state'],'incomplete')
 
     def test_malformed_or_missing_selection_stays_unavailable_without_losing_other_phases(self):
-        config={'targets':[{'id':'pixin','instance':'dm-pixin'}], 'application_inventory':{
-            'units':{'pixin':['native.service']}, 'deployment_manifests':{'pixin':{'sha256':'a'*64}}}}
-        report={'targets':{'pixin':{'debian_advisories':'matched','applications':{
+        config={'targets':[{'id':'guest-a','instance':'dm-guest-a'}], 'application_inventory':{
+            'units':{'guest-a':['native.service']}, 'deployment_manifests':{'guest-a':{'sha256':'a'*64}}}}
+        report={'targets':{'guest-a':{'debian_advisories':'matched','applications':{
             'state':'observed','deployment_selection_units':None}}}}
         phase=daily.phase_observations(config,report)
         self.assertEqual(phase['selected_deployments']['state'],'incomplete')

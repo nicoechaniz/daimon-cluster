@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import selectors
 import subprocess
@@ -125,11 +126,33 @@ def fetch_feed(opener=None):
     return raw
 
 
+def configured_targets(config):
+    if config.get('schema') != 'cluster-children-daily/v1':
+        raise ValueError('unsupported_daily_configuration')
+    targets = config.get('targets')
+    if (not isinstance(targets, list) or len(targets) != 5
+            or any(not isinstance(target, dict) or set(target) != {'id', 'instance'}
+                   or not isinstance(target['id'], str)
+                   or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', target['id'])
+                   for target in targets)
+            or len({target['id'] for target in targets}) != 5):
+        raise ValueError('one_host_and_four_children_required')
+    if targets[0]['instance'] is not None:
+        raise ValueError('selected_host_required')
+    instances = [target['instance'] for target in targets[1:]]
+    if (any(not isinstance(instance, str)
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', instance)
+            for instance in instances) or len(set(instances)) != 4):
+        raise ValueError('selected_children_required')
+    return targets
+
+
 def validate(config):
     required={'schema', 'state', 'scanner', 'scanner_sha256', 'targets'}
     if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status','application_inventory','public_advisories','known_exploitation'}
             or type(config.get('compiler_cleanup_enabled',False)) is not bool):
         raise ValueError('explicit_daily_configuration_required')
+    targets = configured_targets(config)
     if 'known_exploitation' in config:
         validate_known_selection(config['known_exploitation'])
         if (config['known_exploitation'].get('assess_freetype') and
@@ -139,19 +162,9 @@ def validate(config):
         if 'application_inventory' not in config:raise ValueError('application_inventory_required_for_advisories')
         validate_advisory_selection(config['public_advisories'])
     if 'application_inventory' in config:
-        validate_application_selection(config['application_inventory'])
+        validate_application_selection(config['application_inventory'], {target['id'] for target in targets})
     if 'browser_status' in config:
         validate_browser_selection(config['browser_status'])
-    if config['schema'] != 'cluster-children-daily/v1':
-        raise ValueError('unsupported_daily_configuration')
-    targets = config['targets']
-    if len(targets) != 5 or len({t['id'] for t in targets}) != 5:
-        raise ValueError('one_host_and_four_children_required')
-    if targets[0] != {'id': 'lordoftheflies', 'instance': None}:
-        raise ValueError('selected_host_required')
-    if targets[1:] != [{'id': n, 'instance': 'dm-' + n}
-                       for n in ('pixin', 'calipso', 'c-137', 'noodles')]:
-        raise ValueError('selected_children_required')
     scanner = Path(config['scanner'])
     if (not scanner.is_absolute() or scanner.is_symlink() or scanner.stat().st_uid != 0
             or scanner.stat().st_mode & 0o022 or scanner.stat().st_size > MIB
@@ -215,7 +228,7 @@ print(json.dumps(value))
     return {**result,'checked':int(time.time()),'helper_sha256':selection['sha256']}
 
 
-def validate_application_selection(selection):
+def validate_application_selection(selection, target_ids=None):
     if (not isinstance(selection,dict) or not {'helper','sha256','units'}<=set(selection)
             or set(selection)-{'helper','sha256','units','browser_components','deployment_manifests','network_listeners'}
             or type(selection.get('browser_components',False)) is not bool
@@ -223,7 +236,7 @@ def validate_application_selection(selection):
         raise ValueError('explicit_application_selection_required')
     validate_browser_selection({k:selection[k] for k in ('helper','sha256')})
     units=selection['units']
-    if not isinstance(units,dict) or set(units)!={'lordoftheflies','pixin','calipso','c-137','noodles'}:
+    if not isinstance(units, dict) or len(units) != 5 or (target_ids is not None and set(units) != target_ids):
         raise ValueError('five_application_targets_required')
     import re
     for names in units.values():
@@ -246,7 +259,7 @@ def validate_application_selection(selection):
 
 def application_inventory(name, instance, selection):
     validate_application_selection(selection)
-    code='selection='+repr(selection)+'\nname='+repr(name)+'\n'+r'''
+    code='selection='+repr(selection)+'\nname='+repr(name)+'\nguest='+repr(instance is not None)+'\n'+r'''
 import pathlib,hashlib,importlib.util,json
 p=pathlib.Path(selection['helper'])
 if p.resolve()!=p or not p.is_file() or p.stat().st_size>65536:raise ValueError('application_helper_path')
@@ -256,7 +269,7 @@ for item in [p,*p.parents]:
 if hashlib.sha256(p.read_bytes()).hexdigest()!=selection['sha256']:raise ValueError('application_helper_bytes')
 spec=importlib.util.spec_from_file_location('selected_application_reader',p)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-options={'include_browser_components':True} if selection.get('browser_components') and name!='lordoftheflies' else {}
+options={'include_browser_components':True} if selection.get('browser_components') and guest else {}
 if selection.get('network_listeners'):options['include_network_listeners']=True
 reference=selection.get('deployment_manifests',{}).get(name)
 if reference is not None:options['deployments']=m.load_deployments(reference['path'],reference['sha256'],selection['units'][name])
@@ -366,7 +379,7 @@ def public_advisories(selection, inventories, root):
     return result
 
 
-def known_exploitation(selection, candidates, report, root):
+def known_exploitation(selection, candidates, report, root, guest_ids=()):
     """Preserve the last accepted intersection on source/input failure."""
     validate_known_selection(selection)
     cache=root/'known-exploitation';cache.mkdir(mode=0o700,exist_ok=True)
@@ -393,11 +406,11 @@ def known_exploitation(selection, candidates, report, root):
         result=module.match(values)
         if selection.get('assess_chromium'):
             contexts={name:module.chromium_context((root/name/'packages.status').read_text(),
-                (root/name/'debian-findings.txt').read_text()) for name in ('pixin','calipso','c-137','noodles')}
+                (root/name/'debian-findings.txt').read_text()) for name in guest_ids}
             options={}
             if selection.get('assess_freetype'):
                 options['freetype_components']={name:report['targets'][name]['applications'].get('browser_components',{})
-                    for name in ('pixin','calipso','c-137','noodles')}
+                    for name in guest_ids}
             result=module.assess_chromium(result,contexts,**options)
         if (result.get('schema')!='children-known-exploitation/v1' or result.get('state')!='matched'
                 or type(result.get('needs_triage')) is not bool):raise ValueError('kev_result_schema')
@@ -676,7 +689,10 @@ def collect(config):
             report['public_advisories']=public_advisories(config['public_advisories'],
                 [v.get('applications',{}) for v in report['targets'].values()],root)
         if config.get('known_exploitation'):
-            report['known_exploitation']=known_exploitation(config['known_exploitation'],kev_candidates,report,root)
+            report['known_exploitation']=known_exploitation(
+                config['known_exploitation'], kev_candidates, report, root,
+                [target['id'] for target in config['targets'][1:]],
+            )
         report['phases'] = phase_observations(config, report)
         if report['phases']['selected_public_python_malicious']['state'] == 'observed':
             report['unassessed'].remove('malicious-release-advisories')

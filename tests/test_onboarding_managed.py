@@ -157,7 +157,7 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
         # configuration admits an ordinary original, without enabling egress.
         if admission_only:
             backend.config.qualification = False
-            assert managed._ready({**plan, 'name': 'pixin'})
+            assert managed._ready({**plan, 'name': 'guest-a'})
             assert managed._selection(plan) == (None, None)
         else:
             assert managed.observe({**plan, 'name': 'eko'}).state == 'waiting'

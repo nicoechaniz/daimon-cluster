@@ -198,6 +198,21 @@ completed startup record and plans a linked record for the verified descendant.
 The activation, local origin, Matrix contract and launch operation must match.
 An unfinished launch or an unverified authority change remains a conflict.
 
+Qualify the exact installed predecessor supervisor and its child reader
+against the successor before applying it to a live body. A Source body with
+a selected Tribe application must load both views. Its reader must verify
+the unchanged membership context in the Root epoch that signed it. A
+successful bundle or visibility check alone does not prove that this reader
+can start. Keep the membership document intact and select a compatible reader
+through the existing native profile writer if needed.
+
+When the supervisor reports startup failure before retaining native readiness,
+use the documented [exact native-start recovery](tribu-sdk-successor.md#native-sdk-successors--current-source-contract-2026-11-01)
+with the inspected failed operation. If the sockets answer but the lifecycle
+still owns its startup lock, wait for the same startup to complete before
+issuing the acknowledgement. Preserve the selected compatible supervisor for
+later starts.
+
 The acknowledgement must be canonical and contain only rollout, embodiment,
 unchanged incarnation, successor manifest, runtime hash and journal/audit IDs.
 Reapplying a completed peer returns `already-acknowledged`; repeating `ack`

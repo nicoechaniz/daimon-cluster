@@ -136,7 +136,7 @@ class Sysops(unittest.TestCase):
                     "-n",
                     "incus",
                     "exec",
-                    "dm-pixin",
+                    "dm-guest-a",
                     "--",
                 ],
             }

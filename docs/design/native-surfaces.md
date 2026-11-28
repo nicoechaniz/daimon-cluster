@@ -3,8 +3,8 @@
 The foundation's `/here` selects daimons sharing an embodiment surface. Tribe
 membership, a signed host label and physical hypervisor colocation do not prove
 that relationship. In the native Linux domain, the surface is the current OS
-instance. CompAII on ITACA and Oliva in its full KVM therefore have distinct
-surfaces even though they use the same physical server.
+instance. A native body and a body in a full guest VM have distinct surfaces
+even when they use the same physical server.
 
 The existing inherited parent observation socket accepts a `kind: surface`
 request alongside the unchanged body request. The exact body, incarnation and

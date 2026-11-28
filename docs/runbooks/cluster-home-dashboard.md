@@ -89,24 +89,8 @@ of newly created directories only; recursive chown would also mutate hardlinked
 predecessor files. Rollback selects prior code and the prior collector config;
 it never restores databases or clears native work.
 
-## Children's host continuation
+## Managed guest deployment
 
-Nicolas confirmed reinstalling the former daimonmatrix VPS as Debian 13 on
-2026-11-07. Do not repeat that destructive operation. Its new role is
-lordoftheflies. Four distinct companions are planned: Pixin, Calipso, C-137 and
-Noodles. Target limits are 3 shared CPUs and 4 GiB RAM each, bounded fast storage
-on the main disk and one quarter of the secondary slow disk each, after measured
-filesystem overhead and host reserves. Creation, authentication, installed/read
-skills, actual native delivery and human acceptance are separate states.
-
-Use institutional Drive through the maintained institutional-drive adapter for
-worthwhile heavy project material that must persist or be shared, using its
-project map and selected audience. Do not send disposable builds/caches, duplicate
-archives or unused experiments to Drive. Bound local staging by size and age;
-retain live databases, credentials and necessary recovery in supported local
-storage. Each companion receives only its own private child record and grants.
-The daily resource/security maintenance must preserve original work, profiles,
-active/dirty worktrees and uncertain operations. The maintained Security handoff
-is Shared Resources `docs/services/children-host-security.md`; its proposed
-controls are not an observed installation. Provisioning and daily automation
-remain pending until target-side exercised receipts exist.
+Use the authorized operations register to resolve the selected host, current
+resource limits, and receiving state. Creation, authentication, installed
+skills, native delivery, and human acceptance have separate receipts.

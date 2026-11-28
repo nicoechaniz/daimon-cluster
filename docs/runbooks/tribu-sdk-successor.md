@@ -582,16 +582,10 @@ not another relationship ceremony or a reason to restart native model sessions.
 
 ## Resolve receiver placement before maintenance
 
-A receiver is a signed body, not necessarily an Incus guest on the coordinator.
-Resolve its current maintained host and native/container route before selecting
-an execution backend. Eko lives natively on MEDUSA; Oliva is the current ITACA
-KVM and CompAII is native on ITACA. Nicolas retired/deleted the old Source
-containers and their copies on2026-10-31: they are not rollback/update targets.
-Use protected receiving bindings and the maintained host records. The old
-physical Source HOST stays ON until Nicolas explicitly orders shutdown; no
-cleanup/deletion or host-off drill is authorized. Dated deployment notes below
-retain their evidence and do not supersede these current placements.
-Preserve independent CompAII/Oliva work and all existing signed identities.
+A receiver is a signed body and may run natively or in a guest. Resolve the
+current host, placement, retirement holds, and execution backend through
+protected receiving bindings and the authorized operations register. Preserve
+existing signed identities and independent native work.
 
 
 ## Routine observation and software correction before activation
@@ -755,8 +749,8 @@ affected directories belong to the receiving owner and contain only generated
 one private sibling directory outside the import tree. Keep the sealed release,
 signed state, credentials and bytecode guard unchanged. Verify the original
 service with its authenticated receiving reader after systemd's existing retry.
-Legion's existing Codex body recovered this way on 23 November 2026. Its native
-receiving status and `we.heads` reads authenticated with the prior SDK.
+Record the observed receiving status and authenticated group read in the
+authorized operations register.
 
 ```sh
 python -B -m clusterctl.receiving_maintenance --spec "$maintenance_spec" prepare
@@ -2319,13 +2313,8 @@ or revive an archived body. Verify its own user-bus read plus unchanged native
 service/Core identity. Do not restart the current Conversation or Codex to add
 the dependency. An already available manager needs no additional operation.
 
-ITACA and all four current children already had available managers. Oliva and
-Eko had the packaged units installed but inactive with no user bus; the scoped
-existing-manager bring-up passed while preserving their actual native service
-and Core PID files. Installed operator, current manager availability, exact
-selected task effects and model uptake remain distinct receiving observations.
-
-
+Record manager availability, exact task effects and model uptake separately
+in the authorized operations register.
 
 ## Membership verification survives owner restart
 

@@ -1,13 +1,10 @@
 # Repository operating rules
 
-## Next-companion hold and single-command onboarding — 2026-11-08
+## Single-command onboarding
 
-Honor the human's current explicit timing direction for the selected companion.
-Nicolas has now ordered Emma's actual admission for Jesi on ITACA; that direct
-instruction supersedes Emma's earlier waiting hold. Preserve the retained
-pairing, placement, original operation and later corrections in its private
-receiving checkpoint. An implementation test or partial stage alone never
-establishes creation, timed-trial completion or first human use.
+Respect explicit pairing and timing decisions from the authorized operations
+register. Preserve the selected pairing, placement, original operation, and
+later corrections in its private receiving checkpoint.
 
 Every encountered onboarding defect must be repaired in the maintained route,
 not left as a required operator script. Once the required inputs are complete,
@@ -16,9 +13,9 @@ and a verified result or precise retained failure. Reuse existing job and effect
 journals; preserve uncertain operations and all explicit human holds. Follow
 `docs/design/onboarding-jobs.md#single-command-companion-contract`.
 
-Read `RESUME.md` before roadmap work. Preserve the exact reviewed RC pins and
-the access/production boundaries recorded there. Historical deployed-pair
-receipts are evidence only and do not authorize contact with those systems.
+Read `RESUME.md` before roadmap work. Keep fleet identities, endpoints,
+receiving evidence, and operational decisions in the authorized operations
+register. Public code, examples, issues, PRs, and logs must use synthetic data.
 
 ## Administrative-access invariant
 

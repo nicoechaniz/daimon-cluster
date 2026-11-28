@@ -290,7 +290,7 @@ one allowlisted `home` mount, or the workflow fails closed.
 | Issue | Evidence artifact |
 |-------|-------------------|
 | #1 ADR | `docs/adr/ADR-001-v1-architecture.md` ratified by Nicolás |
-| #2 Inventory | `docs/inventory/daimonmatrix-2026-07-31.md` (committed) |
+| #2 Inventory | the authorized operations register (committed) |
 | #3 Threat model | `docs/security/threat-model-v1.md` + invariants review |
 | #4 Contracts | this document + schemas validated in #10 tests |
 | #5 Gate | PLAN/DESIGN diff with tribe approval recorded |

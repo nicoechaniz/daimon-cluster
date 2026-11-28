@@ -137,7 +137,8 @@ def test_source_manager_keeps_fixed_unit_execution_and_typed_bus_path(tmp_path, 
     import json
     monkeypatch.setattr(receiving_worker.os, 'geteuid', lambda: 0)
     manager = maintenance.MembershipManager(source=True)
-    manager.unit = tmp_path / maintenance.SOURCE_UNIT
+    manager.unit_name = 'source-control.service'
+    manager.unit = tmp_path / manager.unit_name
     manager.unit.write_text('[Service]\nUser=debian\nGroup=debian\n')
     monkeypatch.setattr(receiving_worker.onboarding_release, 'regular', lambda p, **kw: p.read_bytes())
     values = dict(Id=manager.unit_name, LoadState='loaded', ActiveState='active', SubState='running',
@@ -157,7 +158,7 @@ def test_source_manager_keeps_fixed_unit_execution_and_typed_bus_path(tmp_path, 
     monkeypatch.setattr(manager, '_run', run)
     before = manager.inspect()
     assert before['control_group'] == values['ControlGroup']
-    assert set(bus_paths) == {'/org/freedesktop/systemd1/unit/compaii_2dmatrix_2ditaca_2eservice'}
+    assert set(bus_paths) == {'/org/freedesktop/systemd1/unit/source_2dcontrol_2eservice'}
     values['User'] = 'root'
     with pytest.raises(OnboardingError, match='binding_required'):
         manager.inspect()

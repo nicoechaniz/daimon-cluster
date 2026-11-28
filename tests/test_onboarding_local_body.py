@@ -103,7 +103,7 @@ def test_foreground_native_carrier_preserves_wire_and_refuses_other_requests(mon
                 assert send() == (200, b'receipt', carrier.CONTENT_TYPE)
                 assert send('/dm-messaging/v1/message')[0] == 403
                 assert send(kind='application/json')[0] == 403
-                proxy.allowed_host = '10.6.6.6'
+                proxy.allowed_host = '198.51.100.6'
                 assert send()[0] == 403
                 assert observed == [('/dm-peer/v1', carrier.CONTENT_TYPE, b'opaque native fixture')]
             finally:
@@ -111,10 +111,10 @@ def test_foreground_native_carrier_preserves_wire_and_refuses_other_requests(mon
                     server.shutdown()
                 for thread in threads:
                     thread.join()
-    assert carrier.addresses('10.6.6.7', '10.6.6.6') == ('10.6.6.7', '10.6.6.6')
-    for address in ('0.0.0.0', '127.0.0.1', '8.8.8.8', '224.0.0.1', '169.254.1.1', '10.6.6.6'):
+    assert carrier.addresses('198.51.100.7', '198.51.100.6') == ('198.51.100.7', '198.51.100.6')
+    for address in ('0.0.0.0', '127.0.0.1', '8.8.8.8', '224.0.0.1', '169.254.1.1', '198.51.100.6'):
         with pytest.raises(ValueError):
-            carrier.addresses(address, '10.6.6.6')
+            carrier.addresses(address, '198.51.100.6')
 
 
 def test_private_requests_before_intake_reuse_supplied_inputs_and_preserve_reports(tmp_path):

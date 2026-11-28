@@ -83,7 +83,7 @@ resolved from the private profile; no login, account or unit directive is change
 
 The default manager is the system manager. For an existing Matrix-only
 systemd user service, add `"manager": "user"` to the receiving owner's own
-mode-0600 spec and run the command as that same non-root owner. This scope
+mode-0600 spec and pass `--user-profile` as that same non-root owner. This scope
 supports the local profile operation; fleet reader completion uses the
 root-managed command. The user unit's fragment and drop-ins must belong to
 the same owner. The check ties the authenticated child to that unit's actual

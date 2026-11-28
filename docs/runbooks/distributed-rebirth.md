@@ -213,6 +213,24 @@ still owns its startup lock, wait for the same startup to complete before
 issuing the acknowledgement. Preserve the selected compatible supervisor for
 later starts.
 
+Before changing a serving Tribe body, retain its selected readers and the
+owning reader-completion checkpoint. On the successor, read the authenticated
+Tribe reader recovery state and the actual vector. A compatible reboot can
+recover that vector. A changed application, authority, or protected storage
+identity can invalidate it even when the process and signed message intake are
+healthy. A successful start acknowledgement does not close this maintenance
+step.
+
+If recovery invalidates the vector, finish the same maintenance operation with
+[the existing reader completion](tribu-sdk-successor.md#complete-readers-after-group-publication).
+Requalify the previously selected readers against the new loaded context and
+current membership. Verify the restored vector and the existing peer routes
+before completing the rollout or moving to another body. Keep unavailable
+peers explicit and preserve their retained obligations. A message already in
+the recipient inbox stays received even if its signed return is refused.
+Use the original delivery evidence for recovery and leave a terminal refused
+return visible.
+
 The acknowledgement must be canonical and contain only rollout, embodiment,
 unchanged incarnation, successor manifest, runtime hash and journal/audit IDs.
 Reapplying a completed peer returns `already-acknowledged`; repeating `ack`

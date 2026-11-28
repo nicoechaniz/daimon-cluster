@@ -1557,6 +1557,17 @@ thirty-day bound, matching installed clients and a strictly advancing authentica
 custody counter. This normalization grants no control and never substitutes for
 current native authority, loaded-process or reader qualification.
 
+If the status role has already expired, the owner can use
+`onboarding_service.observe_managed_matrix_socket` with the selected runtime
+socket, the owning manager's inspection and its existing deadline. This
+read-only observation compares the socket's kernel peer to the exact live
+unit invocation and cgroup. If the native child is distinct from the service
+parent, both are pinned. A socket, process, or unit change refuses the result.
+It sends no application request and reports native RPC as unobserved. Keep
+signed runtime validation, custody, stop authorization, publication and
+post-start reader proof with the existing owner transaction. A successful
+kernel observation alone grants no lifecycle action.
+
 After the native transaction, re-render only affected existing client projections
 through their maintained owner route, reload the selected Matrix service, and
 finish the existing all-required reader qualification/selection. Preserve native
